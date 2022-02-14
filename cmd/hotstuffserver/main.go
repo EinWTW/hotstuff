@@ -10,12 +10,12 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/EinWTW/hotstuff/internal/cli"
+	"github.com/EinWTW/hotstuff/internal/logging"
+	"github.com/EinWTW/hotstuff/internal/profiling"
 	"github.com/relab/hotstuff"
 	"github.com/relab/hotstuff/config"
 	"github.com/relab/hotstuff/crypto"
-	"github.com/relab/hotstuff/internal/cli"
-	"github.com/relab/hotstuff/internal/logging"
-	"github.com/relab/hotstuff/internal/profiling"
 	"github.com/spf13/pflag"
 	"google.golang.org/grpc/credentials"
 )

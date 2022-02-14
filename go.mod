@@ -1,4 +1,4 @@
-module github.com/relab/hotstuff
+module github.com/EinWTW/hotstuff
 
 go 1.13
 
@@ -15,6 +15,7 @@ require (
 	github.com/mitchellh/mapstructure v1.4.0 // indirect
 	github.com/pelletier/go-toml v1.8.1 // indirect
 	github.com/relab/gorums v0.2.3-0.20210213125733-f04667f97266
+	github.com/relab/hotstuff v0.2.2
 	github.com/smartystreets/assertions v1.2.0 // indirect
 	github.com/spf13/afero v1.5.1 // indirect
 	github.com/spf13/cast v1.3.1 // indirect
@@ -36,3 +37,5 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.0-20200615113413-eeeca48fe776 // indirect
 )
+
+replace github.com/relab/hotstuff v0.2.2 => github.com/EinWTW/hotstuff v0.2.2
