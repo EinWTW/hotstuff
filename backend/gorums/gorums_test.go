@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/EinWTW/hotstuff/internal/mocks"
+	"github.com/EinWTW/hotstuff/internal/testutil"
 	"github.com/golang/mock/gomock"
 	"github.com/relab/hotstuff"
 	"github.com/relab/hotstuff/config"
 	"github.com/relab/hotstuff/crypto"
 	ecdsacrypto "github.com/relab/hotstuff/crypto/ecdsa"
-	"github.com/relab/hotstuff/internal/mocks"
-	"github.com/relab/hotstuff/internal/testutil"
 	"google.golang.org/grpc/credentials"
 )
 

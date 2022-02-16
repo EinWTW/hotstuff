@@ -4,12 +4,12 @@ import (
 	"context"
 	"testing"
 
+	"github.com/EinWTW/hotstuff/internal/mocks"
+	"github.com/EinWTW/hotstuff/internal/testutil"
 	"github.com/golang/mock/gomock"
 	"github.com/relab/hotstuff"
 	"github.com/relab/hotstuff/crypto"
 	ecdsacrypto "github.com/relab/hotstuff/crypto/ecdsa"
-	"github.com/relab/hotstuff/internal/mocks"
-	"github.com/relab/hotstuff/internal/testutil"
 )
 
 func createKey(t *testing.T) *ecdsacrypto.PrivateKey {

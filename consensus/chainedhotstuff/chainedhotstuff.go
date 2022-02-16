@@ -4,8 +4,8 @@ import (
 	"context"
 	"sync"
 
+	"github.com/EinWTW/hotstuff/internal/logging"
 	"github.com/relab/hotstuff"
-	"github.com/relab/hotstuff/internal/logging"
 )
 
 var logger = logging.GetLogger()

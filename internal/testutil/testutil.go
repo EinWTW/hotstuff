@@ -5,9 +5,9 @@ import (
 	"net"
 	"testing"
 
+	"github.com/EinWTW/hotstuff/internal/mocks"
 	"github.com/golang/mock/gomock"
 	"github.com/relab/hotstuff"
-	"github.com/relab/hotstuff/internal/mocks"
 )
 
 // CreateMockReplica returns a mock of a hotstuff.Replica.

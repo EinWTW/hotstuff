@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/EinWTW/hotstuff/internal/testutil"
 	"github.com/golang/mock/gomock"
 	"github.com/relab/hotstuff"
 	"github.com/relab/hotstuff/crypto"
 	"github.com/relab/hotstuff/crypto/ecdsa"
-	"github.com/relab/hotstuff/internal/testutil"
 )
 
 func createKey(t *testing.T) *ecdsa.PrivateKey {

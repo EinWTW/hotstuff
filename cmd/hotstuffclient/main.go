@@ -29,7 +29,6 @@ import (
 	"github.com/spf13/pflag"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -62,10 +61,8 @@ func usage() {
 }
 
 func main() {
-	pflag.Usage = usage
 
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	pflag.Usage = usage
 
 	help := pflag.BoolP("help", "h", false, "Prints this text.")
 	cpuprofile := pflag.String("cpuprofile", "", "File to write CPU profile to")
@@ -84,11 +81,10 @@ func main() {
 		pflag.Usage()
 		os.Exit(0)
 	}
-
 	profileStop, err := profiling.StartProfilers(*cpuprofile, *memprofile, "", "")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to start profilers: %v\n", err)
-		os.Exit(1)
+
 	}
 	defer func() {
 		err := profileStop()
@@ -98,11 +94,43 @@ func main() {
 		}
 	}()
 
+	client, err := InitHotstuffClient()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to InitHotstuffClient: %v\n", err)
+		os.Exit(1)
+	}
+	data := []byte("")
+	err = client.SendCommands(context.Background(), data)
+	if err != nil && !errors.Is(err, io.EOF) {
+		fmt.Fprintf(os.Stderr, "Failed to send commands: %v\n", err)
+		client.Close()
+		os.Exit(1)
+	}
+	client.Close()
+
+	stats := client.GetStats()
+	throughput := stats.Throughput
+	latency := stats.LatencyAvg / float64(time.Millisecond)
+	latencySD := math.Sqrt(stats.LatencyVar) / float64(time.Millisecond)
+
+	fmt.Printf("Throughput (ops/sec): %.2f, Latency (ms): %.2f, Latency Std.dev (ms): %.2f\n",
+		throughput,
+		latency,
+		latencySD,
+	)
+
+}
+
+func InitHotstuffClient() (*hotstuffClient, error) {
+
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+
 	var conf options
-	err = cli.ReadConfig(&conf, "")
+	err := cli.ReadConfig(&conf, "")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to unmarshal config: %v\n", err)
-		os.Exit(1)
+		return nil, err
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -122,26 +150,26 @@ func main() {
 		cancel()
 	}()
 
-	start(ctx, &conf)
+	return start(ctx, &conf)
 }
 
-func start(ctx context.Context, conf *options) {
+func start(ctx context.Context, conf *options) (*hotstuffClient, error) {
 	var creds credentials.TransportCredentials
 	if conf.TLS {
 		rootCAs, err := x509.SystemCertPool()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to get system cert pool: %v\n", err)
-			os.Exit(1)
+			return nil, err
 		}
 		for _, ca := range conf.RootCAs {
 			cert, err := ioutil.ReadFile(ca)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to read CA: %v\n", err)
-				os.Exit(1)
+				return nil, err
 			}
 			if !rootCAs.AppendCertsFromPEM(cert) {
 				fmt.Fprintf(os.Stderr, "Failed to decode CA\n")
-				os.Exit(1)
+				return nil, err
 			}
 		}
 		creds = credentials.NewClientTLSFromCert(rootCAs, "")
@@ -164,41 +192,10 @@ func start(ctx context.Context, conf *options) {
 	client, err := newHotStuffClient(conf, replicaConfig)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to start client: %v\n", err)
-		os.Exit(1)
+		return nil, err
 	}
 
-	err = client.SendCommands(ctx)
-	if err != nil && !errors.Is(err, io.EOF) {
-		fmt.Fprintf(os.Stderr, "Failed to send commands: %v\n", err)
-		client.Close()
-		os.Exit(1)
-	}
-	client.Close()
-
-	stats := client.GetStats()
-	throughput := stats.Throughput
-	latency := stats.LatencyAvg / float64(time.Millisecond)
-	latencySD := math.Sqrt(stats.LatencyVar) / float64(time.Millisecond)
-
-	if !conf.Benchmark {
-		fmt.Printf("Throughput (ops/sec): %.2f, Latency (ms): %.2f, Latency Std.dev (ms): %.2f\n",
-			throughput,
-			latency,
-			latencySD,
-		)
-	} else {
-		client.data.MeasuredThroughput = throughput
-		client.data.MeasuredLatency = latency
-		client.data.LatencyVariance = math.Pow(latencySD, 2) // variance in ms^2
-		b, err := proto.Marshal(client.data)
-		if err != nil {
-			log.Fatalf("Could not marshal benchmarkdata: %v\n", err)
-		}
-		_, err = os.Stdout.Write(b)
-		if err != nil {
-			log.Fatalf("Could not write data: %v\n", err)
-		}
-	}
+	return client, nil
 }
 
 type qspec struct {
@@ -280,8 +277,9 @@ func (c *hotstuffClient) GetStats() *benchmark.Result {
 	return c.stats.GetResult()
 }
 
-func (c *hotstuffClient) SendCommands(ctx context.Context) error {
-	num := uint64(1)
+func (c *hotstuffClient) SendCommands(ctx context.Context, data []byte) error {
+	//num := uint64(1)
+	num := uint64(time.Now().UnixNano())
 	var sleeptime time.Duration
 	if c.conf.RateLimit > 0 {
 		sleeptime = time.Second / time.Duration(c.conf.RateLimit)
@@ -291,55 +289,54 @@ func (c *hotstuffClient) SendCommands(ctx context.Context) error {
 	defer c.wg.Wait()
 	c.stats.Start()
 
-	for {
-		if atomic.LoadUint64(&c.inflight) < c.conf.MaxInflight {
-			atomic.AddUint64(&c.inflight, 1)
-			data := make([]byte, c.conf.PayloadSize)
-			n, err := c.reader.Read(data)
+	//{
+	if atomic.LoadUint64(&c.inflight) < c.conf.MaxInflight {
+		atomic.AddUint64(&c.inflight, 1)
+		//data := make([]byte, c.conf.PayloadSize)
+		// n, err := c.reader.Read(data)
+		// if err != nil {
+		// 	return err
+		// }
+		cmd := &client.Command{
+			ClientID:       uint32(c.conf.SelfID),
+			SequenceNumber: num,
+			Data:           data, //data[:n],
+		}
+		now := time.Now()
+		promise := c.gorumsConfig.ExecCommand(ctx, cmd)
+		num++
+
+		c.wg.Add(1)
+		go func(promise *client.AsyncEmpty, sendTime time.Time) {
+			_, err := promise.Get()
+			atomic.AddUint64(&c.inflight, ^uint64(0))
 			if err != nil {
-				return err
-			}
-			cmd := &client.Command{
-				ClientID:       uint32(c.conf.SelfID),
-				SequenceNumber: num,
-				Data:           data[:n],
-			}
-			now := time.Now()
-			promise := c.gorumsConfig.ExecCommand(ctx, cmd)
-			num++
-
-			c.wg.Add(1)
-			go func(promise *client.AsyncEmpty, sendTime time.Time) {
-				_, err := promise.Get()
-				atomic.AddUint64(&c.inflight, ^uint64(0))
-				if err != nil {
-					qcError, ok := err.(gorums.QuorumCallError)
-					if !ok || qcError.Reason != context.Canceled.Error() {
-						log.Printf("Did not get enough replies for command: %v\n", err)
-					}
+				qcError, ok := err.(gorums.QuorumCallError)
+				if !ok || qcError.Reason != context.Canceled.Error() {
+					log.Printf("Did not get enough replies for command: %v\n", err)
 				}
-				duration := time.Since(sendTime)
-				c.stats.AddLatency(duration)
-				if c.conf.Benchmark {
-					c.data.Stats = append(c.data.Stats, &client.CommandStats{
-						StartTime: timestamppb.New(sendTime),
-						Duration:  durationpb.New(duration),
-					})
-				}
-				c.wg.Done()
-			}(promise, now)
-		}
-
-		if c.conf.RateLimit > 0 {
-			time.Sleep(sleeptime)
-		}
-
-		err := ctx.Err()
-		if errors.Is(err, context.Canceled) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
+			}
+			duration := time.Since(sendTime)
+			c.stats.AddLatency(duration)
+			if c.conf.Benchmark {
+				c.data.Stats = append(c.data.Stats, &client.CommandStats{
+					StartTime: timestamppb.New(sendTime),
+					Duration:  durationpb.New(duration),
+				})
+			}
+			c.wg.Done()
+		}(promise, now)
 	}
+
+	if c.conf.RateLimit > 0 {
+		time.Sleep(sleeptime)
+	}
+
+	err := ctx.Err()
+	if errors.Is(err, context.Canceled) {
+		return nil
+	} else {
+		return err
+	}
+	//}
 }

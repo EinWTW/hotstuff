@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/EinWTW/hotstuff/internal/mocks"
+	"github.com/EinWTW/hotstuff/internal/testutil"
 	"github.com/golang/mock/gomock"
 	"github.com/relab/hotstuff"
 	"github.com/relab/hotstuff/backend/gorums"
@@ -13,8 +15,6 @@ import (
 	"github.com/relab/hotstuff/consensus/chainedhotstuff"
 	"github.com/relab/hotstuff/crypto"
 	"github.com/relab/hotstuff/crypto/ecdsa"
-	"github.com/relab/hotstuff/internal/mocks"
-	"github.com/relab/hotstuff/internal/testutil"
 	"github.com/relab/hotstuff/leaderrotation"
 	"github.com/relab/hotstuff/synchronizer"
 )

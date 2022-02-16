@@ -57,9 +57,6 @@ func usage() {
 func main() {
 	pflag.Usage = usage
 
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
-
 	// some configuration options can be set using flags
 	help := pflag.BoolP("help", "h", false, "Prints this text.")
 	configFile := pflag.String("config", "", "The path to the config file")
@@ -100,8 +97,19 @@ func main() {
 		}
 	}()
 
+	config := ""
+	if configFile != nil {
+		config = *configFile
+	}
+	InitHotstuffServer(config)
+}
+
+func InitHotstuffServer(configFile string) {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+
 	var conf options
-	err = cli.ReadConfig(&conf, *configFile)
+	err := cli.ReadConfig(&conf, configFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to read config: %v\n", err)
 		os.Exit(1)
