@@ -3,8 +3,8 @@ package proto
 import (
 	"math/big"
 
+	"github.com/EinWTW/hotstuff/crypto/ecdsa"
 	"github.com/relab/hotstuff"
-	"github.com/relab/hotstuff/crypto/ecdsa"
 )
 
 // SignatureToProto converts a hotstuff.Signature to a proto.Signature.

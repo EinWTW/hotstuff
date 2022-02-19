@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/EinWTW/hotstuff/crypto/ecdsa"
 	"github.com/EinWTW/hotstuff/internal/proto"
 	"github.com/relab/gorums"
 	"github.com/relab/hotstuff"
 	"github.com/relab/hotstuff/config"
-	"github.com/relab/hotstuff/crypto/ecdsa"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )

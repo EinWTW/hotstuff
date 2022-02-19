@@ -34,6 +34,7 @@ func (chain *blockChain) dropOldest() {
 }
 
 // Store stores a block in the blockchain
+// TODO: DB
 func (chain *blockChain) Store(block *hotstuff.Block) {
 	chain.mut.Lock()
 	defer chain.mut.Unlock()

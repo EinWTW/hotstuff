@@ -11,7 +11,7 @@ import (
 
 	"time"
 
-	clientutils "github.com/EinWTW/hotstuff/cmd/hotstuffclient/utils"
+	client "github.com/EinWTW/hotstuff/cmd/hotstuffclient/client"
 	"github.com/EinWTW/hotstuff/internal/profiling"
 	"github.com/spf13/pflag"
 )
@@ -59,7 +59,7 @@ func main() {
 		}
 	}()
 
-	client, err := clientutils.InitHotstuffClient()
+	client, err := client.InitHotstuffClient()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to InitHotstuffClient: %v\n", err)
 		os.Exit(1)

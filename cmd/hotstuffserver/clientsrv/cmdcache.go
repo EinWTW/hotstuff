@@ -1,4 +1,4 @@
-package main
+package clientsrv
 
 import (
 	"container/list"

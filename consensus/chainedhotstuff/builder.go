@@ -1,9 +1,9 @@
 package chainedhotstuff
 
 import (
+	"github.com/EinWTW/hotstuff/crypto/ecdsa"
 	"github.com/relab/hotstuff"
 	"github.com/relab/hotstuff/blockchain"
-	"github.com/relab/hotstuff/crypto/ecdsa"
 )
 
 // Builder is used to set up a HotStuff instance
