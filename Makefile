@@ -13,7 +13,7 @@ debug: GCFLAGS += -gcflags='all=-N -l'
 debug: $(binaries)
 
 $(binaries):
-	@go build -o ./$@ $(GCFLAGS) ./$(dir $@)
+	@go build -o ./.bin/ $(GCFLAGS) ./$(dir $@)
 
 protos: tools download $(proto_go) $(gorums_go)
 
