@@ -48,13 +48,13 @@ type options struct {
 	}
 }
 
-func InitHotstuffClient() (*HotstuffClient, error) {
+func InitHotstuffClient(configFile string) (*HotstuffClient, error) {
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 
 	var conf options
-	err := cli.ReadConfig(&conf, "")
+	err := cli.ReadConfig(&conf, configFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to unmarshal config: %v\n", err)
 		return nil, err
