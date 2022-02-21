@@ -37,7 +37,7 @@ import (
 
 type options struct {
 	RootCAs         []string `mapstructure:"root-cas"`
-	Privkey         string
+	Privkey         string `mapstructure:"privkey"`
 	Cert            string
 	SelfID          hotstuff.ID `mapstructure:"self-id"`
 	PmType          string      `mapstructure:"pacemaker"`
@@ -57,8 +57,8 @@ type options struct {
 		PeerAddr   string `mapstructure:"peer-address"`
 		ClientAddr string `mapstructure:"client-address"`
 		RedisAddr  string `mapstructure:"redis-address"`
-		Pubkey     string
-		Cert       string
+		Pubkey     string `mapstructure:"pubkey"`
+		Cert       string `mapstructure:"cert"`
 	}
 }
 
