@@ -6,7 +6,7 @@ import (
 )
 
 // ReadConfig reads config options from configuration files and command line flags.
-func ReadConfig(opts interface{}, secondaryConfig string) (err error) {
+func ReadConfig(opts interface{}, configfile string) (err error) {
 	err = viper.BindPFlags(pflag.CommandLine)
 	if err != nil {
 		return err
