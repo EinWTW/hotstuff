@@ -37,7 +37,7 @@ import (
 
 type options struct {
 	RootCAs         []string `mapstructure:"root-cas"`
-	Privkey         string `mapstructure:"privkey"`
+	Privkey         string   `mapstructure:"privkey"`
 	Cert            string
 	SelfID          hotstuff.ID `mapstructure:"self-id"`
 	PmType          string      `mapstructure:"pacemaker"`
@@ -346,7 +346,7 @@ func (srv *clientSrv) Exec(cmd hotstuff.Command) {
 			log.Printf("Failed to unmarshal command: %v\n", err)
 		}
 		if srv.conf.PrintCommands {
-			fmt.Printf("%s", cmd.Data)
+			log.Printf("Debug20220222-%s", cmd.Data)
 		}
 
 		srv.mut.Lock()
@@ -382,9 +382,12 @@ func (srv *clientSrv) Get(key []byte) ([]byte, error) {
 func (srv *clientSrv) Set(key, value []byte) error {
 	srv.mut.Lock()
 	err := srv.rediskv.Set(key, value)
+	if err != nil {
+		log.Println(string(key), err)
+	}
 	srv.mut.Unlock()
-	// val, err := srv.rediskv.Get([]byte(req.GetKey()))
-	// log.Println(string(val), err)
+	val, err := srv.rediskv.Get(key)
+	log.Println("Debug20220222-gorumsConfig"+string(val), err)
 
 	return err
 }

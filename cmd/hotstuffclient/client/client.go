@@ -229,6 +229,7 @@ func (c *HotstuffClient) SendCommands(ctx context.Context, data []byte) error {
 			SequenceNumber: num,
 			Data:           data, //data[:n],
 		}
+		log.Println("Debug20220222-gorumsConfig" + cmd.String())
 		now := time.Now()
 		promise := c.gorumsConfig.ExecCommand(ctx, cmd)
 		num++
@@ -255,6 +256,7 @@ func (c *HotstuffClient) SendCommands(ctx context.Context, data []byte) error {
 		}(promise, now)
 	}
 
+	log.Println("Debug20220222-gorumsConfig.ExecCommand done" + string(data))
 	if c.conf.RateLimit > 0 {
 		time.Sleep(sleeptime)
 	}

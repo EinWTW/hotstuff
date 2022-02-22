@@ -30,7 +30,7 @@ func main() {
 	pflag.Usage = usage
 
 	help := pflag.BoolP("help", "h", false, "Prints this text.")
-	configFile := flag.String("config", "", "The path to the config file")
+	configFile := pflag.String("config", "", "The path to the config file")
 	cpuprofile := pflag.String("cpuprofile", "", "File to write CPU profile to")
 	memprofile := pflag.String("memprofile", "", "File to write memory profile to")
 	pflag.Uint32("self-id", 0, "The id for this replica.")
@@ -60,7 +60,7 @@ func main() {
 		}
 	}()
 
-	client, err := client.InitHotstuffClient(configFile)
+	client, err := client.InitHotstuffClient(*configFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to InitHotstuffClient: %v\n", err)
 		os.Exit(1)
