@@ -2,7 +2,7 @@
 
 trap 'trap - SIGTERM && kill -- -$$' SIGINT SIGTERM EXIT
 
-bin=cmd/hotstuffserver/hotstuffserver
+bin=.bin/hotstuffserver
 
 run_with_rr() {
 	export _RR_TRACE_DIR="rr/r$1"

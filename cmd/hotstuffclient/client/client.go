@@ -229,7 +229,7 @@ func (c *HotstuffClient) SendCommands(ctx context.Context, data []byte) error {
 			SequenceNumber: num,
 			Data:           data, //data[:n],
 		}
-		log.Println("Debug20220222-ExecCommand start " + cmd.String())
+
 		now := time.Now()
 		promise := c.gorumsConfig.ExecCommand(ctx, cmd)
 		num++
@@ -258,10 +258,10 @@ func (c *HotstuffClient) SendCommands(ctx context.Context, data []byte) error {
 		log.Printf("Debug20220222-ExecCommand err, %d %d", atomic.LoadUint64(&c.inflight), c.conf.MaxInflight)
 	}
 
-	log.Println("Debug20220222-gorumsConfig.ExecCommand done" + string(data))
 	if c.conf.RateLimit > 0 {
 		time.Sleep(sleeptime)
 	}
+	log.Println("Debug20220222-gorumsConfig.ExecCommand done" + num)
 
 	err := ctx.Err()
 	if errors.Is(err, context.Canceled) {
