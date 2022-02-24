@@ -213,7 +213,7 @@ func (c *HotstuffClient) SendCommands(ctx context.Context, data []byte) error {
 	}
 
 	defer c.stats.End()
-	// defer c.wg.Wait()
+	defer c.wg.Wait()
 	c.stats.Start()
 
 	var err error
@@ -251,7 +251,7 @@ func (c *HotstuffClient) SendCommands(ctx context.Context, data []byte) error {
 			c.wg.Done()
 			return err
 		}(promise, now)
-		c.wg.Wait()
+
 	} else {
 		log.Printf("Debug20220222-ExecCommand err, %d %d \n", atomic.LoadUint64(&c.inflight), c.conf.MaxInflight)
 		return fmt.Errorf("ExecCommand err , %d %d", atomic.LoadUint64(&c.inflight), c.conf.MaxInflight)
