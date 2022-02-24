@@ -213,17 +213,13 @@ func (c *HotstuffClient) SendCommands(ctx context.Context, data []byte) error {
 	}
 
 	defer c.stats.End()
-	defer c.wg.Wait()
+	// defer c.wg.Wait()
 	c.stats.Start()
 
-	//{
+	var err error
 	if atomic.LoadUint64(&c.inflight) < c.conf.MaxInflight {
 		atomic.AddUint64(&c.inflight, 1)
-		//data := make([]byte, c.conf.PayloadSize)
-		// n, err := c.reader.Read(data)
-		// if err != nil {
-		// 	return err
-		// }
+
 		cmd := &client.Command{
 			ClientID:       uint32(c.conf.SelfID),
 			SequenceNumber: num,
@@ -235,7 +231,7 @@ func (c *HotstuffClient) SendCommands(ctx context.Context, data []byte) error {
 		num++
 
 		c.wg.Add(1)
-		go func(promise *client.AsyncEmpty, sendTime time.Time) {
+		go func(promise *client.AsyncEmpty, sendTime time.Time) error {
 			_, err := promise.Get()
 			atomic.AddUint64(&c.inflight, ^uint64(0))
 			if err != nil {
@@ -253,21 +249,22 @@ func (c *HotstuffClient) SendCommands(ctx context.Context, data []byte) error {
 				})
 			}
 			c.wg.Done()
+			return err
 		}(promise, now)
+		c.wg.Wait()
 	} else {
 		log.Printf("Debug20220222-ExecCommand err, %d %d \n", atomic.LoadUint64(&c.inflight), c.conf.MaxInflight)
+		return fmt.Errorf("ExecCommand err , %d %d", atomic.LoadUint64(&c.inflight), c.conf.MaxInflight)
 	}
 
 	if c.conf.RateLimit > 0 {
 		time.Sleep(sleeptime)
 	}
-	log.Printf("Debug20220222-gorumsConfig.ExecCommand done %d \n", num)
+	log.Printf("Debug20220222-ExecCommand done [%d] %d \n", uint32(c.conf.SelfID), num)
 
-	err := ctx.Err()
+	err = ctx.Err()
 	if errors.Is(err, context.Canceled) {
 		return nil
-	} else {
-		return err
 	}
-	//}
+	return err
 }
