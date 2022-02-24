@@ -255,13 +255,13 @@ func (c *HotstuffClient) SendCommands(ctx context.Context, data []byte) error {
 			c.wg.Done()
 		}(promise, now)
 	} else {
-		log.Printf("Debug20220222-ExecCommand err, %d %d", atomic.LoadUint64(&c.inflight), c.conf.MaxInflight)
+		log.Printf("Debug20220222-ExecCommand err, %d %d \n", atomic.LoadUint64(&c.inflight), c.conf.MaxInflight)
 	}
 
 	if c.conf.RateLimit > 0 {
 		time.Sleep(sleeptime)
 	}
-	log.Println("Debug20220222-gorumsConfig.ExecCommand done" + num)
+	log.Printf("Debug20220222-gorumsConfig.ExecCommand done %d \n", num)
 
 	err := ctx.Err()
 	if errors.Is(err, context.Canceled) {
