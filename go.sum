@@ -26,6 +26,8 @@ github.com/EinWTW/hotstuff v0.2.2 h1:lwqNt7E+5J2zuY1Nnsc7eNIW+RgbITybIBbIR1rO/zc
 github.com/EinWTW/hotstuff v0.2.2/go.mod h1:W/PgdxZ6OGLkzDejzfouMalNOF9QVUJXHAD+wK7k8Xw=
 github.com/EinWTW/hotstuff v0.2.3-0.20220216191634-4f5ac2ab7ffc h1:XvkL1+ZfHmFwiJ+WeGBBvibRTLMLOLvPTEwDTBVr4oM=
 github.com/EinWTW/hotstuff v0.2.3-0.20220216191634-4f5ac2ab7ffc/go.mod h1:jk+FVSTeHCyvjPJxSzY9EAXdqZJnOYNaGQ2pngFQEk8=
+github.com/EinWTW/hotstuff v0.2.3-0.20220224082937-3682422fac9f h1:8eJcuL8H+2t7/4m/8939VcGEhgwrD9Ecae5r1s9NJx8=
+github.com/EinWTW/hotstuff v0.2.3-0.20220224082937-3682422fac9f/go.mod h1:m4DA8UvRouGhOfc3+2dnWLwRAecX1eMhbLa/XEQU39I=
 github.com/OneOfOne/xxhash v1.2.2 h1:KMrpdQIwFcEqXDklaen+P1axHaj9BSKzvpUUfnHldSE=
 github.com/OneOfOne/xxhash v1.2.2/go.mod h1:HSdplMjZKSmBqAxg5vPj2TmRDmfkzw+cTzAElWljhcU=
 github.com/alecthomas/template v0.0.0-20160405071501-a0175ee3bccc h1:cAKDfWh5VpdgMhJosfJnn5/FoN2SRZ4p7fJNX58YPaU=

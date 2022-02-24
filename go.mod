@@ -38,4 +38,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.0-20200615113413-eeeca48fe776 // indirect
 )
 
-replace github.com/relab/hotstuff v0.2.2 => github.com/EinWTW/hotstuff veritashs-experiment
+replace github.com/relab/hotstuff v0.2.2 => github.com/EinWTW/hotstuff v0.2.3-0.20220224082937-3682422fac9f

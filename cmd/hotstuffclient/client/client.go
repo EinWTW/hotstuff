@@ -253,7 +253,7 @@ func (c *HotstuffClient) SendCommands(ctx context.Context, data []byte) error {
 
 	} else {
 		log.Printf("Debug20220222-ExecCommand err, %d %d \n", atomic.LoadUint64(&c.inflight), c.conf.MaxInflight)
-		return fmt.Errorf("ExecCommand err , %d %d", atomic.LoadUint64(&c.inflight), c.conf.MaxInflight)
+		//return fmt.Errorf("ExecCommand err , %d %d", atomic.LoadUint64(&c.inflight), c.conf.MaxInflight)
 	}
 
 	if c.conf.RateLimit > 0 {
