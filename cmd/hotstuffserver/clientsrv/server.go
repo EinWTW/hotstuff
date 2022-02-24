@@ -338,7 +338,7 @@ func (srv *clientSrv) Exec(cmd hotstuff.Command) {
 	if len(batch.GetCommands()) > 0 && srv.conf.PrintThroughput {
 		now := time.Now().UnixNano()
 		prev := atomic.SwapInt64(&srv.lastExecTime, now)
-		fmt.Printf("%d, %d\n", now-prev, len(batch.GetCommands()))
+		fmt.Printf("Debug20220222-batch.GetCommands %d, %d\n", now-prev, len(batch.GetCommands()))
 	}
 	req := new(pbv.SetRequest)
 	for _, cmd := range batch.GetCommands() {

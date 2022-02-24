@@ -216,7 +216,7 @@ func (c *HotstuffClient) SendCommands(ctx context.Context, data []byte) error {
 		sleeptime = time.Duration(c.conf.TXDelay) * time.Millisecond
 	}
 	defer c.stats.End()
-	defer c.wg.Wait()
+	//defer c.wg.Wait()
 	c.stats.Start()
 
 	var err error
