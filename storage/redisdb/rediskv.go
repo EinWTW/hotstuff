@@ -1,9 +1,7 @@
-package storage
+package redisdb
 
 import (
 	"context"
-
-	"github.com/EinWTW/hotstuff/storage/redisconn"
 
 	"github.com/go-redis/redis/v8"
 )
@@ -21,7 +19,7 @@ type KV interface {
 }
 
 func NewRedisKV(addr, pwd string, db int) (*RedisKV, error) {
-	cli, err := redisconn.NewRedisConn(addr, pwd, db)
+	cli, err := NewRedisConn(addr, pwd, db)
 	if err != nil {
 		return nil, err
 	}

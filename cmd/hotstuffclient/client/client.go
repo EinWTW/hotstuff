@@ -33,6 +33,7 @@ import (
 type options struct {
 	SelfID      hotstuff.ID `mapstructure:"self-id"`
 	RateLimit   int         `mapstructure:"rate-limit"`
+	TXDelay     int         `mapstructure:"tx-delay"`
 	PayloadSize int         `mapstructure:"payload-size"`
 	MaxInflight uint64      `mapstructure:"max-inflight"`
 	DataSource  string      `mapstructure:"input"`
@@ -211,7 +212,9 @@ func (c *HotstuffClient) SendCommands(ctx context.Context, data []byte) error {
 	if c.conf.RateLimit > 0 {
 		sleeptime = time.Second / time.Duration(c.conf.RateLimit)
 	}
-
+	if c.conf.TXDelay > 0 {
+		sleeptime = time.Duration(c.conf.TXDelay) * time.Millisecond
+	}
 	defer c.stats.End()
 	defer c.wg.Wait()
 	c.stats.Start()
@@ -256,7 +259,7 @@ func (c *HotstuffClient) SendCommands(ctx context.Context, data []byte) error {
 		//return fmt.Errorf("ExecCommand err , %d %d", atomic.LoadUint64(&c.inflight), c.conf.MaxInflight)
 	}
 
-	if c.conf.RateLimit > 0 {
+	if c.conf.TXDelay > 0 {
 		time.Sleep(sleeptime)
 	}
 	log.Printf("Debug20220222-ExecCommand done [%d] %d \n", uint32(c.conf.SelfID), num)

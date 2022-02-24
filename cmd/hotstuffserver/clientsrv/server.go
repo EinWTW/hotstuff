@@ -21,7 +21,7 @@ import (
 	"github.com/EinWTW/hotstuff/consensus/chainedhotstuff"
 	"github.com/EinWTW/hotstuff/internal/cli"
 	"github.com/EinWTW/hotstuff/internal/logging"
-	"github.com/EinWTW/hotstuff/storage"
+	"github.com/EinWTW/hotstuff/storage/redisdb"
 	"github.com/EinWTW/hotstuff/synchronizer"
 	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/relab/gorums"
@@ -202,7 +202,7 @@ type clientSrv struct {
 	hs           hotstuff.Consensus
 	pm           hotstuff.ViewSynchronizer
 	cmdCache     *cmdCache
-	rediskv      *storage.RedisKV
+	rediskv      *redisdb.RedisKV
 	mut          sync.Mutex
 	finishedCmds map[cmdID]chan struct{}
 
@@ -220,7 +220,7 @@ func newClientServer(conf *options, replicaConfig *config.ReplicaConfig, tlsCert
 	}
 
 	serverOpts = append(serverOpts, gorums.WithGRPCServerOptions(grpcServerOpts...))
-	rdb, err := storage.NewRedisKV(conf.RedisAddr, "", 1)
+	rdb, err := redisdb.NewRedisKV(conf.RedisAddr, "", 1)
 	if err != nil {
 		log.Println("New server redis db fail: " + conf.RedisAddr)
 	}
