@@ -382,12 +382,11 @@ func (srv *clientSrv) Get(key []byte) ([]byte, error) {
 func (srv *clientSrv) Set(key, value []byte) error {
 	srv.mut.Lock()
 	err := srv.rediskv.Set(key, value)
-	if err != nil {
-		log.Println(string(key), err)
-	}
 	srv.mut.Unlock()
-	val, err := srv.rediskv.Get(key)
-	log.Println("Debug20220222-gorumsConfig"+string(val), err)
+	// val, err := srv.rediskv.Get(key)
+	// if err != nil {
+	// 	log.Println("Debug20220222-gorumsConfig"+string(key), err)
+	// }
 
 	return err
 }
