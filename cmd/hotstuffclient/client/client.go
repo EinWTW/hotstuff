@@ -231,7 +231,7 @@ func (c *HotstuffClient) SendCommands(ctx context.Context, data []byte) error {
 		num++
 
 		c.wg.Add(1)
-		go func(promise *client.AsyncEmpty, sendTime time.Time) error {
+		go func(promise *client.AsyncEmpty, sendTime time.Time) {
 			_, err := promise.Get()
 			atomic.AddUint64(&c.inflight, ^uint64(0))
 			if err != nil {
@@ -249,7 +249,6 @@ func (c *HotstuffClient) SendCommands(ctx context.Context, data []byte) error {
 				})
 			}
 			c.wg.Done()
-			return err
 		}(promise, now)
 
 	} else {
