@@ -32,7 +32,7 @@ func (b Builder) Build() hotstuff.Consensus {
 	}
 	signer, verifier := ecdsa.New(b.Config)
 	if b.BlockChain == nil {
-		hs.blocks = blockchain.New(100)
+		hs.blocks = blockchain.New(100) //maxsize
 	}
 	if b.Signer == nil {
 		hs.signer = signer
