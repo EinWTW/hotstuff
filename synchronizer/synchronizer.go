@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/EinWTW/hotstuff/internal/logging"
 	"github.com/relab/hotstuff"
+	"github.com/wtwinlab/hotstuff/internal/logging"
 )
 
 var logger = logging.GetLogger()

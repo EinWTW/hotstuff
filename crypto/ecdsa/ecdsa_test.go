@@ -3,11 +3,11 @@ package ecdsa
 import (
 	"testing"
 
-	"github.com/EinWTW/hotstuff/internal/mocks"
-	"github.com/EinWTW/hotstuff/internal/testutil"
 	"github.com/golang/mock/gomock"
 	"github.com/relab/hotstuff"
 	"github.com/relab/hotstuff/crypto"
+	"github.com/wtwinlab/hotstuff/internal/mocks"
+	"github.com/wtwinlab/hotstuff/internal/testutil"
 )
 
 func createKey(t *testing.T) *PrivateKey {

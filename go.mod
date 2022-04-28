@@ -1,4 +1,4 @@
-module github.com/EinWTW/hotstuff
+module github.com/wtwinlab/hotstuff
 
 go 1.13
 

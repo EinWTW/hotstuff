@@ -6,17 +6,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/EinWTW/hotstuff/backend/gorums"
-	"github.com/EinWTW/hotstuff/consensus/chainedhotstuff"
-	"github.com/EinWTW/hotstuff/crypto/ecdsa"
-	"github.com/EinWTW/hotstuff/internal/mocks"
-	"github.com/EinWTW/hotstuff/internal/testutil"
-	"github.com/EinWTW/hotstuff/synchronizer"
 	"github.com/golang/mock/gomock"
 	"github.com/relab/hotstuff"
 	"github.com/relab/hotstuff/config"
 	"github.com/relab/hotstuff/crypto"
 	"github.com/relab/hotstuff/leaderrotation"
+	"github.com/wtwinlab/hotstuff/backend/gorums"
+	"github.com/wtwinlab/hotstuff/consensus/chainedhotstuff"
+	"github.com/wtwinlab/hotstuff/crypto/ecdsa"
+	"github.com/wtwinlab/hotstuff/internal/mocks"
+	"github.com/wtwinlab/hotstuff/internal/testutil"
+	"github.com/wtwinlab/hotstuff/synchronizer"
 )
 
 func createKey(t *testing.T) *ecdsa.PrivateKey {

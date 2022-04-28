@@ -16,7 +16,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/EinWTW/hotstuff/internal/cli"
 	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/relab/gorums"
 	"github.com/relab/gorums/benchmark"
@@ -24,6 +23,7 @@ import (
 	"github.com/relab/hotstuff/client"
 	"github.com/relab/hotstuff/config"
 	"github.com/relab/hotstuff/crypto"
+	"github.com/wtwinlab/hotstuff/internal/cli"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/protobuf/types/known/durationpb"

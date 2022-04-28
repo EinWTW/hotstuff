@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"os"
 
-	srv "github.com/EinWTW/hotstuff/cmd/hotstuffserver/clientsrv"
-	"github.com/EinWTW/hotstuff/internal/profiling"
 	"github.com/spf13/pflag"
+	srv "github.com/wtwinlab/hotstuff/cmd/hotstuffserver/clientsrv"
+	"github.com/wtwinlab/hotstuff/internal/profiling"
 )
 
 func usage() {

@@ -11,9 +11,9 @@ import (
 
 	"time"
 
-	client "github.com/EinWTW/hotstuff/cmd/hotstuffclient/client"
-	"github.com/EinWTW/hotstuff/internal/profiling"
 	"github.com/spf13/pflag"
+	client "github.com/wtwinlab/hotstuff/cmd/hotstuffclient/client"
+	"github.com/wtwinlab/hotstuff/internal/profiling"
 )
 
 func usage() {
