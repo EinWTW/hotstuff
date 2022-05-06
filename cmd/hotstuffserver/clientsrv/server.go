@@ -24,11 +24,15 @@ import (
 	"github.com/relab/hotstuff/crypto"
 	"github.com/relab/hotstuff/leaderrotation"
 	hotstuffgorums "github.com/wtwinlab/hotstuff/backend/gorums"
-	pbv "github.com/wtwinlab/hotstuff/cmd/hotstuffserver/proto/veritashs"
+
+	redis "github.com/go-redis/redis/v8"
+	"github.com/nusdbsystem/hybrid/dbconn"
+	pbv "github.com/nusdbsystem/hybrid/veritas_hotstuff/proto/veritashs"
+	hybridveritas "github.com/nusdbsystem/hybrid/veritas_hotstuff/veritas"
+	"github.com/nusdbsystem/hybrid/veritas_kafka/ledger"
 	"github.com/wtwinlab/hotstuff/consensus/chainedhotstuff"
 	"github.com/wtwinlab/hotstuff/internal/cli"
 	"github.com/wtwinlab/hotstuff/internal/logging"
-	"github.com/wtwinlab/hotstuff/storage/redisdb"
 	"github.com/wtwinlab/hotstuff/synchronizer"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -49,6 +53,7 @@ type options struct {
 	ClientAddr      string      `mapstructure:"client-listen"`
 	PeerAddr        string      `mapstructure:"peer-listen"`
 	RedisAddr       string      `mapstructure:"redis-address"`
+	LedgerPath      string      `mapstructure:"ledger-path"`
 	TLS             bool
 	Interval        int
 	Output          string
@@ -57,6 +62,7 @@ type options struct {
 		PeerAddr   string `mapstructure:"peer-address"`
 		ClientAddr string `mapstructure:"client-address"`
 		RedisAddr  string `mapstructure:"redis-address"`
+		LedgerPath string `mapstructure:"ledger-path"`
 		Pubkey     string `mapstructure:"pubkey"`
 		Cert       string `mapstructure:"cert"`
 	}
@@ -202,11 +208,11 @@ type clientSrv struct {
 	hs           hotstuff.Consensus
 	pm           hotstuff.ViewSynchronizer
 	cmdCache     *cmdCache
-	rediskv      *redisdb.RedisKV
 	mut          sync.Mutex
 	finishedCmds map[cmdID]chan struct{}
-
 	lastExecTime int64
+	cli          *redis.Client
+	ledger       *ledger.LogLedger
 }
 
 func newClientServer(conf *options, replicaConfig *config.ReplicaConfig, tlsCert *tls.Certificate) *clientSrv {
@@ -220,9 +226,14 @@ func newClientServer(conf *options, replicaConfig *config.ReplicaConfig, tlsCert
 	}
 
 	serverOpts = append(serverOpts, gorums.WithGRPCServerOptions(grpcServerOpts...))
-	rdb, err := redisdb.NewRedisKV(conf.RedisAddr, "", 1)
+	//rdb, err := redisdb.NewRedisKV(conf.RedisAddr, "", 1)
+	rdb, err := dbconn.NewRedisConn(conf.RedisAddr, "", int(conf.SelfID))
 	if err != nil {
 		log.Println("New server redis db fail: " + conf.RedisAddr)
+	}
+	l, err := ledger.NewLedger(conf.LedgerPath, true)
+	if err != nil {
+		log.Printf("Create ledger failed: %v", err)
 	}
 
 	srv := &clientSrv{
@@ -233,7 +244,8 @@ func newClientServer(conf *options, replicaConfig *config.ReplicaConfig, tlsCert
 		cmdCache:     newCmdCache(conf.BatchSize),
 		finishedCmds: make(map[cmdID]chan struct{}),
 		lastExecTime: time.Now().UnixNano(),
-		rediskv:      rdb,
+		cli:          rdb,
+		ledger:       l,
 	}
 
 	srv.cfg = hotstuffgorums.NewConfig(*replicaConfig)
@@ -301,7 +313,8 @@ func (srv *clientSrv) Start(address string) error {
 func (srv *clientSrv) Stop() {
 	srv.pm.Stop()
 	srv.cfg.Close()
-	srv.rediskv.Close()
+	srv.cli.Close()
+	srv.ledger.Close()
 	srv.hsSrv.Stop()
 	srv.gorumsSrv.Stop()
 	srv.cancel()
@@ -360,33 +373,52 @@ func (srv *clientSrv) Exec(cmd hotstuff.Command) {
 				log.Printf("Failed to unmarshal command: %v\n", err)
 				return
 			}
-			err = srv.Set([]byte(req.Key), []byte(req.Value))
-			if err != nil {
-				log.Printf("Error set redis data: %v\n", err)
+			// refactor 1
+			res, err := srv.cli.Get(srv.ctx, req.GetKey()).Result()
+			if err != nil && err != redis.Nil {
+				log.Printf("Commit log DB get failed: %v", err)
+				if err == nil {
+					v, err := hybridveritas.Decode(res)
+					if err != nil {
+						log.Printf("Commit log decode failed: %v", err)
+					}
+					if v.Version > req.Version {
+						log.Printf("Abort transaction in block for key %s local version %d request version %d\n", req.GetKey(), v.Version, req.Version)
+						continue
+					}
+				}
+				entry, err := hybridveritas.Encode(req.GetValue(), req.GetVersion()+1)
+				if err != nil {
+					log.Printf("Commit log encode failed: %v", err)
+				}
+				if err := srv.cli.Set(srv.ctx, req.GetKey(), entry, 0).Err(); err != nil {
+					log.Printf("Commit log redis set failed: %v", err)
+				}
+			} else {
+				log.Printf("######Debug20220219 clientSrv SetCommands empty: " + strconv.Itoa(int(cmd.SequenceNumber)))
 			}
-		} else {
-			log.Printf("######Debug20220219 clientSrv SetCommands empty: " + strconv.Itoa(int(cmd.SequenceNumber)))
 		}
+		srv.ledger.AppendBlk(cmd.Data)
 	}
 }
 
-func (srv *clientSrv) Get(key []byte) ([]byte, error) {
-	value, err := srv.rediskv.Get(key)
-	if err != nil {
-		return nil, err
-	}
+// func (srv *clientSrv) Get(key []byte) ([]byte, error) {
+// 	value, err := srv.rediskv.Get(key)
+// 	if err != nil {
+// 		return nil, err
+// 	}
 
-	return value, nil
-}
+// 	return value, nil
+// }
 
-func (srv *clientSrv) Set(key, value []byte) error {
-	srv.mut.Lock()
-	err := srv.rediskv.Set(key, value)
-	srv.mut.Unlock()
-	// val, err := srv.rediskv.Get(key)
-	// if err != nil {
-	// 	log.Println("Debug20220222-gorumsConfig"+string(key), err)
-	// }
+// func (srv *clientSrv) Set(key, value []byte) error {
+// 	srv.mut.Lock()
+// 	err := srv.rediskv.Set(key, value)
+// 	srv.mut.Unlock()
+// 	// val, err := srv.rediskv.Get(key)
+// 	// if err != nil {
+// 	// 	log.Println("Debug20220222-gorumsConfig"+string(key), err)
+// 	// }
 
-	return err
-}
+// 	return err
+// }
