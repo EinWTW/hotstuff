@@ -28,7 +28,7 @@ import (
 	redis "github.com/go-redis/redis/v8"
 	"github.com/nusdbsystem/hybrid/dbconn"
 	pbv "github.com/nusdbsystem/hybrid/veritas_hotstuff/proto/veritashs"
-	hybridveritas "github.com/nusdbsystem/hybrid/veritas_hotstuff/veritas"
+	hybridveritas "github.com/nusdbsystem/hybrid/veritas_hotstuff/server"
 	"github.com/nusdbsystem/hybrid/veritas_kafka/ledger"
 	"github.com/wtwinlab/hotstuff/consensus/chainedhotstuff"
 	"github.com/wtwinlab/hotstuff/internal/cli"
