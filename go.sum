@@ -384,6 +384,8 @@ github.com/tmc/grpc-websocket-proxy v0.0.0-20190109142713-0ad062ec5ee5 h1:LnC5Kc
 github.com/tmc/grpc-websocket-proxy v0.0.0-20190109142713-0ad062ec5ee5/go.mod h1:ncp9v5uamzpCO7NfCPTXjqaC+bZgJeR0sMTm6dMHP7U=
 github.com/wtwinlab/hotstuff v0.2.3-0.20220429064733-fff49f0b79e0 h1:eR3u1PccGYmzsIB9ugIXOF9GGha0dcnlZ1Q/Uqa/VBM=
 github.com/wtwinlab/hotstuff v0.2.3-0.20220429064733-fff49f0b79e0/go.mod h1:NpXufHkuxu655uVByofc4WA7cTV7oEK6F75Aq/I7Fnw=
+github.com/wtwinlab/hotstuff v0.2.3-0.20220510035525-0e9df3316dc6 h1:s6vhP9w6RI6FIwGM7flW1i4cx8/0/X3Osgcyca5e5pQ=
+github.com/wtwinlab/hotstuff v0.2.3-0.20220510035525-0e9df3316dc6/go.mod h1:JDvtS6bim76h9JXRrI3WLIHNM3mIbp9gW7rSIHYsz08=
 github.com/xiang90/probing v0.0.0-20190116061207-43a291ad63a2 h1:eY9dn8+vbi4tKz5Qo6v2eYzo7kUS51QINcR5jNpbZS8=
 github.com/xiang90/probing v0.0.0-20190116061207-43a291ad63a2/go.mod h1:UETIi67q53MR2AWcXfiuqkDkRtnGDLqkBTpCHuJHxtU=
 github.com/yuin/goldmark v1.2.1 h1:ruQGxdhGHe7FWOJPT0mKs5+pD2Xs1Bm/kdGlHO04FmM=
