@@ -397,10 +397,13 @@ func (srv *clientSrv) Exec(cmd hotstuff.Command) {
 					log.Printf("Commit log redis set failed: %v", err)
 				}
 			} else {
-				log.Printf("######Debug20220219 clientSrv SetCommands empty: " + strconv.Itoa(int(cmd.SequenceNumber)))
+				log.Printf("######Debug20220219 clientSrv SetCommands err: %v", err)
 			}
+			srv.ledger.AppendBlk(cmd.Data)
+		} else {
+			log.Printf("######Debug20220219 clientSrv SetCommands empty: " + strconv.Itoa(int(cmd.SequenceNumber)))
 		}
-		srv.ledger.AppendBlk(cmd.Data)
+
 	}
 }
 
