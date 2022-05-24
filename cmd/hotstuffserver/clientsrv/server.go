@@ -229,7 +229,7 @@ func newClientServer(conf *options, replicaConfig *config.ReplicaConfig, tlsCert
 
 	serverOpts = append(serverOpts, gorums.WithGRPCServerOptions(grpcServerOpts...))
 	//rdb, err := redisdb.NewRedisKV(conf.RedisAddr, "", 1)
-	rdb, err := dbconn.NewRedisConn(conf.RedisAddr, "", int(conf.SelfID))
+	rdb, err := dbconn.NewRedisConn(conf.RedisAddr, "", 1) //int(conf.SelfID))
 	if err != nil {
 		log.Println("New server redis db fail: " + conf.RedisAddr)
 	}
