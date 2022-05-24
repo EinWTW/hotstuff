@@ -37,5 +37,3 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.0-20200615113413-eeeca48fe776 // indirect
 )
-
-replace github.com/relab/hotstuff v0.2.2 => github.com/wtwinlab/hotstuff v0.2.3-0.20220510035525-0e9df3316dc6
