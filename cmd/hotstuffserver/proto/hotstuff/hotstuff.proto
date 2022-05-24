@@ -1,7 +1,7 @@
 syntax = "proto3";
 package controller;
 
-option go_package = "proto/veritashs";
+option go_package = "proto/hotstuff";
 
 service VeritasNode {
     rpc Get (GetRequest) returns (GetResponse);
