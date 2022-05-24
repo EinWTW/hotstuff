@@ -379,26 +379,25 @@ func (srv *clientSrv) Exec(cmd hotstuff.Command) {
 			res, err := srv.cli.Get(srv.ctx, req.GetKey()).Result()
 			if err != nil && err != redis.Nil {
 				log.Printf("Commit log DB get failed: %v", err)
-				if err == nil {
-					v, err := hybridveritas.Decode(res)
-					if err != nil {
-						log.Printf("Commit log decode failed: %v", err)
-					}
-					if v.Version > req.Version {
-						log.Printf("Abort transaction in block for key %s local version %d request version %d\n", req.GetKey(), v.Version, req.Version)
-						continue
-					}
-				}
-				entry, err := hybridveritas.Encode(req.GetValue(), req.GetVersion()+1)
-				if err != nil {
-					log.Printf("Commit log encode failed: %v", err)
-				}
-				if err := srv.cli.Set(srv.ctx, req.GetKey(), entry, 0).Err(); err != nil {
-					log.Printf("Commit log redis set failed: %v", err)
-				}
-			} else {
-				log.Printf("######Debug20220219 clientSrv SetCommands err: %v", err)
 			}
+			if err == nil {
+				v, err := hybridveritas.Decode(res)
+				if err != nil {
+					log.Printf("Commit log decode failed: %v", err)
+				}
+				if v.Version > req.Version {
+					log.Printf("Abort transaction in block for key %s local version %d request version %d\n", req.GetKey(), v.Version, req.Version)
+					continue
+				}
+			}
+			entry, err := hybridveritas.Encode(req.GetValue(), req.GetVersion()+1)
+			if err != nil {
+				log.Printf("Commit log encode failed: %v", err)
+			}
+			if err := srv.cli.Set(srv.ctx, req.GetKey(), entry, 0).Err(); err != nil {
+				log.Printf("Commit log redis set failed: %v", err)
+			}
+
 			srv.ledger.AppendBlk(cmd.Data)
 		} else {
 			log.Printf("######Debug20220219 clientSrv SetCommands empty: " + strconv.Itoa(int(cmd.SequenceNumber)))
