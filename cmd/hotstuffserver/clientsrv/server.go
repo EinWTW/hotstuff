@@ -356,6 +356,8 @@ func (srv *clientSrv) Exec(cmd hotstuff.Command) {
 		fmt.Printf("Debug20220222-batch.GetCommands %d, %d\n", now-prev, len(batch.GetCommands()))
 	}
 	req := new(pbv.SetRequest)
+	entry := ""
+	version := int64(0)
 	for _, cmd := range batch.GetCommands() {
 		if err != nil {
 			log.Printf("Failed to unmarshal command: %v\n", err)
@@ -379,24 +381,41 @@ func (srv *clientSrv) Exec(cmd hotstuff.Command) {
 			res, err := srv.cli.Get(srv.ctx, req.GetKey()).Result()
 			if err != nil && err != redis.Nil {
 				log.Printf("Commit log DB get failed: %v", err)
-			}
-			if err == nil {
-				v, err := hybridveritas.Decode(res)
-				if err != nil {
-					log.Printf("Commit log decode failed: %v %s", err, res)
-					continue
-				}
-				if v.Version > req.Version {
-					log.Printf("Abort transaction in block for key %s local version %d request version %d\n", req.GetKey(), v.Version, req.Version)
-					continue
-				}
-			}
-			entry, err := hybridveritas.Encode(req.GetValue(), req.GetVersion()+1)
-			if err != nil {
-				log.Printf("Commit log encode failed: %v", err)
 				continue
+			} else {
+				if err == nil && res != "" {
+					v, err := hybridveritas.Decode(res)
+					if err != nil {
+						log.Printf("Commit log decode failed: %v %s", err, res)
+						continue
+					}
+					if v.Version < req.Version { //set only if req.version >  current version
+						version = v.Version + 1
+						entry, err = hybridveritas.Encode(req.GetValue(), v.Version+1)
+						log.Printf("Exec transaction for key %s local version %d request version %d\n", req.GetKey(), v.Version, req.Version)
+						if err != nil {
+							log.Printf("Commit log encode failed: %v", err)
+							continue
+						}
+
+					} else {
+						log.Printf("Abort transaction in block for key %s local version %d request version %d\n", req.GetKey(), v.Version, req.Version)
+						continue
+					}
+				} else { //initial version
+					entry, err = hybridveritas.Encode(req.GetValue(), 0)
+					version = int64(0)
+					log.Printf("Exec transaction in block for key %s local version %d request version %d\n", req.GetKey(), 0, req.Version)
+					if err != nil {
+						log.Printf("Commit log encode failed: %v", err)
+						continue
+					}
+				}
+
 			}
-			if err := srv.cli.Set(srv.ctx, req.GetKey(), entry, 0).Err(); err != nil {
+
+			err = srv.cli.Set(srv.ctx, req.GetKey(), entry, 0).Err()
+			if err != nil {
 				log.Printf("Commit log sharedb set failed: %v %s", err, req.GetKey())
 				continue
 			}
@@ -406,7 +425,7 @@ func (srv *clientSrv) Exec(cmd hotstuff.Command) {
 				log.Printf("Commit log ledger set failed: %v", err)
 				continue
 			}
-			log.Printf("Commit transaction in block for key %s local version %d request version %d\n", req.GetKey(), req.GetVersion()+1, req.Version)
+			log.Printf("Exec transaction for key %s local version %d request version %d\n", req.GetKey(), version, req.Version)
 		} else {
 			log.Printf("######Debug20220219 clientSrv SetCommands empty: " + strconv.Itoa(int(cmd.SequenceNumber)))
 		}
