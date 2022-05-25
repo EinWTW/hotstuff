@@ -383,7 +383,8 @@ func (srv *clientSrv) Exec(cmd hotstuff.Command) {
 			if err == nil {
 				v, err := hybridveritas.Decode(res)
 				if err != nil {
-					log.Printf("Commit log decode failed: %v %v", err, res)
+					log.Printf("Commit log decode failed: %v %s", err, res)
+					continue
 				}
 				if v.Version > req.Version {
 					log.Printf("Abort transaction in block for key %s local version %d request version %d\n", req.GetKey(), v.Version, req.Version)
@@ -393,14 +394,17 @@ func (srv *clientSrv) Exec(cmd hotstuff.Command) {
 			entry, err := hybridveritas.Encode(req.GetValue(), req.GetVersion()+1)
 			if err != nil {
 				log.Printf("Commit log encode failed: %v", err)
+				continue
 			}
 			if err := srv.cli.Set(srv.ctx, req.GetKey(), entry, 0).Err(); err != nil {
-				log.Printf("Commit log sharedb set failed: %v", err)
+				log.Printf("Commit log sharedb set failed: %v %s", err, req.GetKey())
+				continue
 			}
 
 			err = srv.ledger.AppendBlk(cmd.Data)
 			if err != nil {
 				log.Printf("Commit log ledger set failed: %v", err)
+				continue
 			}
 			log.Printf("Commit transaction in block for key %s local version %d request version %d\n", req.GetKey(), req.GetVersion()+1, req.Version)
 		} else {
