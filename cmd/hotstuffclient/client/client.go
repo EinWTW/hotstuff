@@ -255,8 +255,8 @@ func (c *HotstuffClient) SendCommands(ctx context.Context, data []byte) error {
 		}(promise, now)
 
 	} else {
-		log.Printf("Debug20220222-ExecCommand err, %d %d \n", atomic.LoadUint64(&c.inflight), c.conf.MaxInflight)
-		//return fmt.Errorf("ExecCommand err , %d %d", atomic.LoadUint64(&c.inflight), c.conf.MaxInflight)
+		//log.Printf("Debug20220222-ExecCommand err, %d %d \n", atomic.LoadUint64(&c.inflight), c.conf.MaxInflight)
+		return fmt.Errorf("ExecCommand err , inflight %d MaxInflight %d", atomic.LoadUint64(&c.inflight), c.conf.MaxInflight)
 	}
 
 	if c.conf.TXDelay > 0 {

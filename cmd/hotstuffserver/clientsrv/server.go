@@ -383,7 +383,7 @@ func (srv *clientSrv) Exec(cmd hotstuff.Command) {
 			if err == nil {
 				v, err := hybridveritas.Decode(res)
 				if err != nil {
-					log.Printf("Commit log decode failed: %v", err)
+					log.Printf("Commit log decode failed: %v %v", err, res)
 				}
 				if v.Version > req.Version {
 					log.Printf("Abort transaction in block for key %s local version %d request version %d\n", req.GetKey(), v.Version, req.Version)
