@@ -395,10 +395,14 @@ func (srv *clientSrv) Exec(cmd hotstuff.Command) {
 				log.Printf("Commit log encode failed: %v", err)
 			}
 			if err := srv.cli.Set(srv.ctx, req.GetKey(), entry, 0).Err(); err != nil {
-				log.Printf("Commit log redis set failed: %v", err)
+				log.Printf("Commit log sharedb set failed: %v", err)
 			}
 
-			srv.ledger.AppendBlk(cmd.Data)
+			err = srv.ledger.AppendBlk(cmd.Data)
+			if err != nil {
+				log.Printf("Commit log ledger set failed: %v", err)
+			}
+			log.Printf("Commit transaction in block for key %s local version %d request version %d\n", req.GetKey(), req.GetVersion()+1, req.Version)
 		} else {
 			log.Printf("######Debug20220219 clientSrv SetCommands empty: " + strconv.Itoa(int(cmd.SequenceNumber)))
 		}
