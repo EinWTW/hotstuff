@@ -17,7 +17,7 @@ var (
 	interval            = flag.Duration("interval", time.Second, "Length of time interval to group measurements by.")
 	latency             = flag.String("latency", "", "File to save latency plot to.")
 	throughput          = flag.String("throughput", "", "File to save throughput plot to.") //output/tps.pdf
-	throughputVSLatency = flag.String("throughputvslatency", "output/t-l.pdf", "File to save throughput vs latency plot to.")
+	throughputVSLatency = flag.String("throughputvslatency", "output/t-l.csv", "File to save throughput vs latency plot to.")
 )
 
 func main() {
