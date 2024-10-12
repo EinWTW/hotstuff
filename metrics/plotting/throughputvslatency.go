@@ -108,7 +108,7 @@ func avgThroughputVSAvgLatency(p *ThroughputVSLatencyPlot, interval time.Duratio
 	return points
 }
 func writeAvgToFile(avgData string) {
-	jsonFilename := "./output/performance.json"
+	jsonFilename := "./bft-performance.json"
 	jsonFile, err := os.OpenFile(jsonFilename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Fatalf("Failed to open JSON file: %v", err)
