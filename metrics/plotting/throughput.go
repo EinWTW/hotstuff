@@ -26,7 +26,7 @@ func NewThroughputPlot() ThroughputPlot {
 }
 
 // Add adds a measurement to the plotter.
-func (p *ThroughputPlot) Add(measurement interface{}) {
+func (p *ThroughputPlot) Add(measurement any) {
 	p.startTimes.Add(measurement)
 
 	throughput, ok := measurement.(*types.ThroughputMeasurement)
@@ -66,6 +66,8 @@ func avgThroughput(p *ThroughputPlot, interval time.Duration) plotter.XYer {
 	intervals := GroupByTimeInterval(&p.startTimes, p.measurements, interval)
 	return TimeAndAverage(intervals, func(m Measurement) (float64, uint64) {
 		tp := m.(*types.ThroughputMeasurement)
-		return float64(tp.GetCommands()) / tp.GetDuration().AsDuration().Seconds(), 1
+		avg := float64(tp.GetCommands()) / tp.GetDuration().AsDuration().Seconds()
+		//fmt.Printf("{\"TPS\": %v}", avg)
+		return avg, 1
 	})
 }

@@ -1,3 +1,4 @@
+// Plot is a tool for plotting measurements from a HotStuff experiment.
 package main
 
 import (
@@ -14,17 +15,21 @@ import (
 
 var (
 	interval            = flag.Duration("interval", time.Second, "Length of time interval to group measurements by.")
-	latency             = flag.String("latency", "", "File to save latency plot to.")
-	throughput          = flag.String("throughput", "", "File to save throughput plot to.")
-	throughputVSLatency = flag.String("throughputvslatency", "", "File to save throughput vs latency plot to.")
+	latency             = flag.String("latency", "output/lat.pdf", "File to save latency plot to.")
+	throughput          = flag.String("throughput", "output/tps.pdf", "File to save throughput plot to.")
+	throughputVSLatency = flag.String("throughputvslatency", "output/t-l.pdf", "File to save throughput vs latency plot to.")
 )
 
 func main() {
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "usage: %s [flags] [path to measurements.json]\n", os.Args[0])
+		flag.PrintDefaults()
+	}
 	flag.Parse()
 
 	srcPath := flag.Arg(0)
 	if srcPath == "" {
-		fmt.Fprintf(os.Stderr, "usage: %s [flags] [path to measurements]\n", os.Args[0])
+		flag.Usage()
 		os.Exit(1)
 	}
 

@@ -2,6 +2,8 @@ package plotting
 
 import (
 	"fmt"
+	"log"
+	"os"
 	"path"
 	"time"
 
@@ -26,7 +28,7 @@ func NewThroughputVSLatencyPlot() ThroughputVSLatencyPlot {
 }
 
 // Add adds a measurement to the plotter.
-func (p *ThroughputVSLatencyPlot) Add(measurement interface{}) {
+func (p *ThroughputVSLatencyPlot) Add(measurement any) {
 	p.startTimes.Add(measurement)
 
 	m, ok := measurement.(Measurement)
@@ -92,11 +94,38 @@ func avgThroughputVSAvgLatency(p *ThroughputVSLatencyPlot, interval time.Duratio
 			}
 		}
 		if throughputNum > 0 && latencyNum > 0 {
+
 			points = append(points, point{
 				x: throughputSum / float64(throughputNum),
 				y: latencySum / float64(latencyNum),
 			})
+			avgTPS := throughputSum / float64(throughputNum)
+			avgLat := latencySum / float64(latencyNum)
+			avgData := fmt.Sprintf("{\"TPS\": %v, \"latency\": %v}", avgTPS, avgLat)
+			writeAvgToFile(avgData)
 		}
 	}
 	return points
+}
+func writeAvgToFile(avgData string) {
+	jsonFilename := "./output/performance.json"
+	jsonFile, err := os.OpenFile(jsonFilename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatalf("Failed to open JSON file: %v", err)
+	}
+	defer jsonFile.Close()
+	// Write the TPS data to the JSON file
+	//jsonData, err := json.Marshal(tpsData)
+	if err != nil {
+		log.Printf("Failed to marshal JSON: %v", err)
+	} else {
+		if _, err := jsonFile.WriteString(avgData + "\n"); err != nil {
+			log.Printf("Failed to write to JSON file: %v", err)
+		}
+	}
+}
+
+type performance struct {
+	TPS     float64
+	Latency float64
 }
