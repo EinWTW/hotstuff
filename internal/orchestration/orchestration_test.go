@@ -2,6 +2,7 @@ package orchestration_test
 
 import (
 	"io"
+	"math"
 	"net"
 	"os"
 	"os/exec"
@@ -15,25 +16,30 @@ import (
 	"github.com/relab/hotstuff/internal/orchestration"
 	"github.com/relab/hotstuff/internal/proto/orchestrationpb"
 	"github.com/relab/hotstuff/internal/protostream"
-	"github.com/relab/hotstuff/modules"
+	"github.com/relab/hotstuff/logging"
+	"github.com/relab/hotstuff/metrics"
 	"github.com/relab/iago/iagotest"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 func TestOrchestration(t *testing.T) {
-	run := func(consensusImpl string, crypto string) {
+	run := func(t *testing.T, consensusImpl string, crypto string, mods []string, byzantine string) {
+		t.Helper()
 		controllerStream, workerStream := net.Pipe()
 
 		workerProxy := orchestration.NewRemoteWorker(protostream.NewWriter(controllerStream), protostream.NewReader(controllerStream))
-		worker := orchestration.NewWorker(protostream.NewWriter(workerStream), protostream.NewReader(workerStream), modules.NopLogger(), nil, 0)
+		worker := orchestration.NewWorker(protostream.NewWriter(workerStream), protostream.NewReader(workerStream), metrics.NopLogger(), nil, 0)
 
 		experiment := &orchestration.Experiment{
+			Logger:      logging.New("ctrl"),
 			NumReplicas: 4,
 			NumClients:  2,
 			ClientOpts: &orchestrationpb.ClientOpts{
 				ConnectTimeout: durationpb.New(time.Second),
 				MaxConcurrent:  250,
 				PayloadSize:    100,
+				RateLimit:      math.Inf(1),
+				Timeout:        durationpb.New(500 * time.Millisecond),
 			},
 			ReplicaOpts: &orchestrationpb.ReplicaOpts{
 				BatchSize:         100,
@@ -44,8 +50,10 @@ func TestOrchestration(t *testing.T) {
 				Consensus:         consensusImpl,
 				Crypto:            crypto,
 				LeaderRotation:    "round-robin",
+				Modules:           mods,
+				ByzantineStrategy: byzantine,
 			},
-			Duration: 1 * time.Second,
+			Duration: 5 * time.Second,
 			Hosts:    map[string]orchestration.RemoteWorker{"127.0.0.1": workerProxy},
 		}
 
@@ -65,12 +73,28 @@ func TestOrchestration(t *testing.T) {
 		}
 	}
 
-	t.Run("ChainedHotStuff+ECDSA", func(t *testing.T) { run("chainedhotstuff", "ecdsa") })
-	t.Run("ChainedHotStuff+BLS12", func(t *testing.T) { run("chainedhotstuff", "bls12") })
-	t.Run("Fast-HotStuff+ECDSA", func(t *testing.T) { run("fasthotstuff", "ecdsa") })
-	t.Run("Fast-HotStuff+BLS12", func(t *testing.T) { run("fasthotstuff", "bls12") })
-	t.Run("Simple-HotStuff+ECDSA", func(t *testing.T) { run("simplehotstuff", "ecdsa") })
-	t.Run("Simple-HotStuff+BLS12", func(t *testing.T) { run("simplehotstuff", "bls12") })
+	t.Run("ChainedHotStuff+ECDSA", func(t *testing.T) { run(t, "chainedhotstuff", "ecdsa", nil, "") })
+	t.Run("ChainedHotStuff+EDDSA", func(t *testing.T) { run(t, "chainedhotstuff", "eddsa", nil, "") })
+	t.Run("ChainedHotStuff+BLS12", func(t *testing.T) { run(t, "chainedhotstuff", "bls12", nil, "") })
+	t.Run("Fast-HotStuff+ECDSA", func(t *testing.T) { run(t, "fasthotstuff", "ecdsa", nil, "") })
+	t.Run("Fast-HotStuff+EDDSA", func(t *testing.T) { run(t, "fasthotstuff", "eddsa", nil, "") })
+	t.Run("Fast-HotStuff+BLS12", func(t *testing.T) { run(t, "fasthotstuff", "bls12", nil, "") })
+	t.Run("Simple-HotStuff+ECDSA", func(t *testing.T) { run(t, "simplehotstuff", "ecdsa", nil, "") })
+	t.Run("Simple-HotStuff+EDDSA", func(t *testing.T) { run(t, "simplehotstuff", "eddsa", nil, "") })
+	t.Run("Simple-HotStuff+BLS12", func(t *testing.T) { run(t, "simplehotstuff", "bls12", nil, "") })
+
+	// handel
+	mods := []string{"handel"}
+	t.Run("ChainedHotStuff+ECDSA+Handel", func(t *testing.T) { run(t, "chainedhotstuff", "ecdsa", mods, "") })
+	t.Run("ChainedHotStuff+BLS12+Handel", func(t *testing.T) { run(t, "chainedhotstuff", "bls12", mods, "") })
+	t.Run("Fast-HotStuff+ECDSA+Handel", func(t *testing.T) { run(t, "fasthotstuff", "ecdsa", mods, "") })
+	t.Run("Fast-HotStuff+BLS12+Handel", func(t *testing.T) { run(t, "fasthotstuff", "bls12", mods, "") })
+	t.Run("Simple-HotStuff+ECDSA+Handel", func(t *testing.T) { run(t, "simplehotstuff", "ecdsa", mods, "") })
+	t.Run("Simple-HotStuff+BLS12+Handel", func(t *testing.T) { run(t, "simplehotstuff", "bls12", mods, "") })
+
+	// byzantine
+	t.Run("ChainedHotStuff+Fork", func(t *testing.T) { run(t, "chainedhotstuff", "ecdsa", nil, "fork:1") })
+	t.Run("ChainedHotStuff+Silence", func(t *testing.T) { run(t, "chainedhotstuff", "ecdsa", nil, "silence:1") })
 }
 
 func TestDeployment(t *testing.T) {
@@ -79,12 +103,14 @@ func TestDeployment(t *testing.T) {
 	}
 
 	experiment := &orchestration.Experiment{
+		Logger:      logging.New("ctrl"),
 		NumReplicas: 4,
 		NumClients:  2,
 		ClientOpts: &orchestrationpb.ClientOpts{
 			ConnectTimeout: durationpb.New(time.Second),
 			MaxConcurrent:  250,
 			PayloadSize:    100,
+			RateLimit:      math.Inf(1),
 		},
 		ReplicaOpts: &orchestrationpb.ReplicaOpts{
 			BatchSize:         100,
@@ -96,7 +122,7 @@ func TestDeployment(t *testing.T) {
 			Crypto:            "ecdsa",
 			LeaderRotation:    "round-robin",
 		},
-		Duration: 1 * time.Second,
+		Duration: 10 * time.Second,
 		Hosts:    make(map[string]orchestration.RemoteWorker),
 	}
 
@@ -122,8 +148,7 @@ func TestDeployment(t *testing.T) {
 			wg.Done()
 		}(session)
 	}
-	err = experiment.Run()
-	if err != nil {
+	if err = experiment.Run(); err != nil {
 		t.Fatal(err)
 	}
 	wg.Wait()
@@ -132,7 +157,7 @@ func TestDeployment(t *testing.T) {
 func findProjectRoot(t *testing.T) string {
 	// The path to the parent folder of this file.
 	// Will need to be updated if the package is ever moved.
-	var packagePath = filepath.Join("internal", "orchestration")
+	packagePath := filepath.Join("internal", "orchestration")
 
 	_, curFile, _, ok := runtime.Caller(0)
 	if !ok {

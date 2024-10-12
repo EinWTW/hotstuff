@@ -3,16 +3,16 @@ package bls12
 
 import (
 	"crypto/rand"
-	"encoding/binary"
 	"fmt"
 	"math/big"
+	"strings"
+	"sync"
 
 	bls12 "github.com/kilic/bls12-381"
 	"github.com/relab/hotstuff"
-	"github.com/relab/hotstuff/consensus"
 	"github.com/relab/hotstuff/crypto"
+	"github.com/relab/hotstuff/logging"
 	"github.com/relab/hotstuff/modules"
-	"go.uber.org/multierr"
 )
 
 func init() {
@@ -25,12 +25,17 @@ const (
 
 	// PublicKeyFileType is the PEM type for a public key.
 	PublicKeyFileType = "BLS12-381 PUBLIC KEY"
+
+	popMetadataKey = "bls12-pop-bin"
 )
 
-var domain = []byte("BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_")
+var (
+	domain    = []byte("BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_")
+	domainPOP = []byte("BLS_POP_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_")
 
-// the order r of G1
-var curveOrder, _ = new(big.Int).SetString("73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001", 16)
+	// the order r of G1
+	curveOrder, _ = new(big.Int).SetString("73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001", 16)
+)
 
 // PublicKey is a bls12-381 public key.
 type PublicKey struct {
@@ -80,44 +85,14 @@ func GeneratePrivateKey() (*PrivateKey, error) {
 }
 
 // Public returns the public key associated with this private key.
-func (priv *PrivateKey) Public() consensus.PublicKey {
+func (priv *PrivateKey) Public() hotstuff.PublicKey {
 	p := &bls12.PointG1{}
 	// The public key is the secret key multiplied by the generator G1
 	return &PublicKey{p: bls12.NewG1().MulScalarBig(p, &bls12.G1One, priv.p)}
 }
 
-// Signature is a bls12-381 signature.
-type Signature struct {
-	signer hotstuff.ID
-	s      *bls12.PointG2
-}
-
-// ToBytes returns the object as bytes.
-func (s *Signature) ToBytes() []byte {
-	var idBytes [4]byte
-	binary.LittleEndian.PutUint32(idBytes[:], uint32(s.signer))
-	// not sure if it is better to use compressed or uncompressed here.
-	return append(idBytes[:], bls12.NewG2().ToCompressed(s.s)...)
-}
-
-// FromBytes unmarshals a signature from a byte slice.
-func (s *Signature) FromBytes(b []byte) (err error) {
-	s.signer = hotstuff.ID(binary.LittleEndian.Uint32(b))
-	s.s, err = bls12.NewG2().FromCompressed(b[4:])
-	if err != nil {
-		return fmt.Errorf("bls12: failed to decompress signature: %w", err)
-	}
-	return nil
-}
-
-// Signer returns the ID of the replica that generated the signature.
-func (s *Signature) Signer() hotstuff.ID {
-	return s.signer
-}
-
-// AggregateSignature is a bls12-381 aggregate signature. The participants map contains the IDs of the replicas who
-// participated in the creation of the signature. This allows us to build an aggregated public key to verify the
-// signature.
+// AggregateSignature is a bls12-381 aggregate signature. The participants field contains the IDs of the replicas that
+// participated in signature creation. This allows us to build an aggregated public key to verify the signature.
 type AggregateSignature struct {
 	sig          bls12.PointG2
 	participants crypto.Bitfield // The ids of the replicas who submitted signatures.
@@ -146,7 +121,7 @@ func (agg *AggregateSignature) ToBytes() []byte {
 }
 
 // Participants returns the IDs of replicas who participated in the threshold signature.
-func (agg AggregateSignature) Participants() consensus.IDSet {
+func (agg AggregateSignature) Participants() hotstuff.IDSet {
 	return &agg.participants
 }
 
@@ -155,170 +130,300 @@ func (agg AggregateSignature) Bitfield() crypto.Bitfield {
 	return agg.participants
 }
 
-// bls12Crypto is a Signer/Verifier implementation that uses bls12-381 aggregate signatures.
-type bls12Crypto struct {
-	mods *consensus.Modules
+func firstParticipant(participants hotstuff.IDSet) hotstuff.ID {
+	id := hotstuff.ID(0)
+	participants.RangeWhile(func(i hotstuff.ID) bool {
+		id = i
+		return false
+	})
+	return id
 }
 
-// New returns a new bls12-381 signer and verifier.
-func New() consensus.CryptoImpl {
-	bc := &bls12Crypto{}
-	return bc
+type bls12Base struct {
+	configuration modules.Configuration
+	logger        logging.Logger
+	opts          *modules.Options
+
+	mut sync.RWMutex
+	// popCache caches the proof-of-possession results of popVerify for each public key.
+	popCache map[string]bool
 }
 
-func (bc *bls12Crypto) getPrivateKey() *PrivateKey {
-	pk := bc.mods.PrivateKey()
-	return pk.(*PrivateKey)
-}
-
-// InitConsensusModule gives the module a reference to the Modules object.
-// It also allows the module to set module options using the OptionsBuilder.
-func (bc *bls12Crypto) InitConsensusModule(mods *consensus.Modules, _ *consensus.OptionsBuilder) {
-	bc.mods = mods
-}
-
-// Sign signs a hash.
-func (bc *bls12Crypto) Sign(hash consensus.Hash) (sig consensus.Signature, err error) {
-	p, err := bls12.NewG2().HashToCurve(hash[:], domain)
-	if err != nil {
-		return nil, fmt.Errorf("bls12: hash to curve failed: %w", err)
+// New returns a new instance of the BLS12 CryptoBase implementation.
+func New() modules.CryptoBase {
+	return &bls12Base{
+		popCache: make(map[string]bool),
 	}
-	pk := bc.getPrivateKey()
-	bls12.NewG2().MulScalarBig(p, p, pk.p)
-	return &Signature{signer: bc.mods.ID(), s: p}, nil
 }
 
-func (bc *bls12Crypto) aggregateSignatures(signatures map[hotstuff.ID]*Signature) *AggregateSignature {
-	if len(signatures) == 0 {
-		return nil
+// InitModule gives the module a reference to the Core object.
+// It also allows the module to set module options using the OptionsBuilder.
+func (bls *bls12Base) InitModule(mods *modules.Core) {
+	mods.Get(
+		&bls.configuration,
+		&bls.logger,
+		&bls.opts,
+	)
+
+	pop := bls.popProve()
+	b := bls12.NewG2().ToCompressed(pop)
+	bls.opts.SetConnectionMetadata(popMetadataKey, string(b))
+}
+
+func (bls *bls12Base) privateKey() *PrivateKey {
+	return bls.opts.PrivateKey().(*PrivateKey)
+}
+
+func (bls *bls12Base) publicKey(id hotstuff.ID) (pubKey *PublicKey, ok bool) {
+	if replica, ok := bls.configuration.Replica(id); ok {
+		if replica.ID() != bls.opts.ID() && !bls.checkPop(replica) {
+			bls.logger.Warnf("Invalid POP for replica %d", id)
+			return nil, false
+		}
+		if pubKey, ok = replica.PublicKey().(*PublicKey); ok {
+			return pubKey, true
+		}
+		bls.logger.Errorf("Unsupported public key type: %T", replica.PublicKey())
+	}
+	return nil, false
+}
+
+func (bls *bls12Base) subgroupCheck(point *bls12.PointG2) bool {
+	var p bls12.PointG2
+	g2 := bls12.NewG2()
+	g2.MulScalarBig(&p, point, curveOrder)
+	return g2.IsZero(&p)
+}
+
+func (bls *bls12Base) coreSign(message []byte, domainTag []byte) (*bls12.PointG2, error) {
+	pk := bls.privateKey()
+	g2 := bls12.NewG2()
+	point, err := g2.HashToCurve(message, domainTag)
+	if err != nil {
+		return nil, err
+	}
+	// multiply the point by the secret key, storing the result in the same point variable
+	g2.MulScalarBig(point, point, pk.p)
+	return point, nil
+}
+
+func (bls *bls12Base) coreVerify(pubKey *PublicKey, message []byte, signature *bls12.PointG2, domainTag []byte) bool {
+	if !bls.subgroupCheck(signature) {
+		return false
 	}
 	g2 := bls12.NewG2()
-	sig := bls12.PointG2{}
-	var participants crypto.Bitfield
-	for id, s := range signatures {
-		g2.Add(&sig, &sig, s.s)
-		participants.Add(id)
-	}
-	return &AggregateSignature{sig: sig, participants: participants}
-}
-
-// Verify verifies a signature given a hash.
-func (bc *bls12Crypto) Verify(sig consensus.Signature, hash consensus.Hash) bool {
-	s := sig.(*Signature)
-	replica, ok := bc.mods.Configuration().Replica(sig.Signer())
-	if !ok {
-		bc.mods.Logger().Infof("bls12Crypto: got signature from replica whose ID (%d) was not in the config", sig.Signer())
-	}
-	pk := replica.PublicKey().(*PublicKey)
-	p, err := bls12.NewG2().HashToCurve(hash[:], domain)
+	messagePoint, err := g2.HashToCurve(message, domainTag)
 	if err != nil {
 		return false
 	}
 	engine := bls12.NewEngine()
-	engine.AddPairInv(&bls12.G1One, s.s)
-	engine.AddPair(pk.p, p)
+	engine.AddPairInv(&bls12.G1One, signature)
+	engine.AddPair(pubKey.p, messagePoint)
 	return engine.Result().IsOne()
 }
 
-// TODO: I'm not sure to what extent we are vulnerable to a rogue public key attack here.
-// As far as I can tell, this is not a problem right now because we do not yet support reconfiguration,
-// and all public keys are known by all replicas.
-
-// VerifyThresholdSignature verifies an aggregate signature.
-func (bc *bls12Crypto) VerifyThresholdSignature(signature consensus.ThresholdSignature, hash consensus.Hash) bool {
-	sig, ok := signature.(*AggregateSignature)
-	if !ok {
-		return false
-	}
-	pubKeys := make([]*PublicKey, 0)
-	sig.participants.ForEach(func(id hotstuff.ID) {
-		replica, ok := bc.mods.Configuration().Replica(id)
-		if !ok {
-			return
-		}
-		pubKeys = append(pubKeys, replica.PublicKey().(*PublicKey))
-	})
-	ps, err := bls12.NewG2().HashToCurve(hash[:], domain)
+func (bls *bls12Base) popProve() *bls12.PointG2 {
+	pubKey := bls.privateKey().Public().(*PublicKey)
+	proof, err := bls.coreSign(pubKey.ToBytes(), domainPOP)
 	if err != nil {
-		bc.mods.Logger().Error(err)
-		return false
+		bls.logger.Panicf("Failed to generate proof-of-possession: %v", err)
 	}
-	if len(pubKeys) < bc.mods.Configuration().QuorumSize() {
-		return false
-	}
-	engine := bls12.NewEngine()
-	engine.AddPairInv(&bls12.G1One, &sig.sig)
-	for _, pub := range pubKeys {
-		engine.AddPair(pub.p, ps)
-	}
-	return engine.Result().IsOne()
+	return proof
 }
 
-// VerifyThresholdSignatureForMessageSet verifies a threshold signature against a set of message hashes.
-func (bc *bls12Crypto) VerifyThresholdSignatureForMessageSet(signature consensus.ThresholdSignature, hashes map[hotstuff.ID]consensus.Hash) bool {
-	sig, ok := signature.(*AggregateSignature)
+func (bls *bls12Base) popVerify(pubKey *PublicKey, proof *bls12.PointG2) bool {
+	return bls.coreVerify(pubKey, pubKey.ToBytes(), proof, domainPOP)
+}
+
+func (bls *bls12Base) checkPop(replica modules.Replica) (valid bool) {
+	defer func() {
+		if !valid {
+			bls.logger.Warnf("Invalid proof-of-possession for replica %d", replica.ID())
+		}
+	}()
+
+	popBytes, ok := replica.Metadata()[popMetadataKey]
 	if !ok {
+		bls.logger.Warnf("Missing proof-of-possession for replica: %d", replica.ID())
 		return false
 	}
-	hashSet := make(map[consensus.Hash]struct{})
+
+	var key strings.Builder
+	key.WriteString(popBytes)
+	_, _ = key.Write(replica.PublicKey().(*PublicKey).ToBytes())
+
+	bls.mut.RLock()
+	valid, ok = bls.popCache[key.String()]
+	bls.mut.RUnlock()
+	if ok {
+		return valid
+	}
+
+	proof, err := bls12.NewG2().FromCompressed([]byte(popBytes))
+	if err != nil {
+		return false
+	}
+
+	valid = bls.popVerify(replica.PublicKey().(*PublicKey), proof)
+
+	bls.mut.Lock()
+	bls.popCache[key.String()] = valid
+	bls.mut.Unlock()
+
+	return valid
+}
+
+func (bls *bls12Base) coreAggregateVerify(publicKeys []*PublicKey, messages [][]byte, signature *bls12.PointG2) bool {
+	n := len(publicKeys)
+	// validate input
+	if n != len(messages) {
+		return false
+	}
+
+	// precondition n >= 1
+	if n < 1 {
+		return false
+	}
+
+	if !bls.subgroupCheck(signature) {
+		return false
+	}
+
 	engine := bls12.NewEngine()
-	engine.AddPairInv(&bls12.G1One, &sig.sig)
-	for id, hash := range hashes {
-		if _, ok := hashSet[hash]; ok {
-			continue
-		}
-		hashSet[hash] = struct{}{}
-		replica, ok := bc.mods.Configuration().Replica(id)
-		if !ok {
-			return false
-		}
-		pk, ok := replica.PublicKey().(*PublicKey)
-		if !ok {
-			return false
-		}
-		p2, err := bls12.NewG2().HashToCurve(hash[:], domain)
+
+	for i := 0; i < n; i++ {
+		q, err := engine.G2.HashToCurve(messages[i], domain)
 		if err != nil {
 			return false
 		}
-		engine.AddPair(pk.p, p2)
+		engine.AddPair(publicKeys[i].p, q)
 	}
-	if !engine.Result().IsOne() {
+
+	engine.AddPairInv(&bls12.G1One, signature)
+	return engine.Result().IsOne()
+}
+
+func (bls *bls12Base) aggregateVerify(publicKeys []*PublicKey, messages [][]byte, signature *bls12.PointG2) bool {
+	set := make(map[string]struct{})
+	for _, m := range messages {
+		set[string(m)] = struct{}{}
+	}
+	return len(messages) == len(set) && bls.coreAggregateVerify(publicKeys, messages, signature)
+}
+
+func (bls *bls12Base) fastAggregateVerify(publicKeys []*PublicKey, message []byte, signature *bls12.PointG2) bool {
+	engine := bls12.NewEngine()
+	var aggregate bls12.PointG1
+	for _, pk := range publicKeys {
+		engine.G1.Add(&aggregate, &aggregate, pk.p)
+	}
+	return bls.coreVerify(&PublicKey{p: &aggregate}, message, signature, domain)
+}
+
+// Sign creates a cryptographic signature of the given messsage.
+func (bls *bls12Base) Sign(message []byte) (signature hotstuff.QuorumSignature, err error) {
+	p, err := bls.coreSign(message, domain)
+	if err != nil {
+		return nil, fmt.Errorf("bls12: coreSign failed: %w", err)
+	}
+	bf := crypto.Bitfield{}
+	bf.Add(bls.opts.ID())
+	return &AggregateSignature{sig: *p, participants: bf}, nil
+}
+
+// Combine combines multiple signatures into a single signature.
+func (bls *bls12Base) Combine(signatures ...hotstuff.QuorumSignature) (combined hotstuff.QuorumSignature, err error) {
+	if len(signatures) < 2 {
+		return nil, crypto.ErrCombineMultiple
+	}
+
+	g2 := bls12.NewG2()
+	agg := bls12.PointG2{}
+	var participants crypto.Bitfield
+	for _, sig1 := range signatures {
+		if sig2, ok := sig1.(*AggregateSignature); ok {
+			sig2.participants.RangeWhile(func(id hotstuff.ID) bool {
+				if participants.Contains(id) {
+					err = crypto.ErrCombineOverlap
+					return false
+				}
+				participants.Add(id)
+				return true
+			})
+			if err != nil {
+				return nil, err
+			}
+			g2.Add(&agg, &agg, &sig2.sig)
+		} else {
+			bls.logger.Panicf("cannot combine incompatible signature type %T (expected %T)", sig1, sig2)
+		}
+	}
+	return &AggregateSignature{sig: agg, participants: participants}, nil
+}
+
+// Verify verifies the given quorum signature against the message.
+func (bls *bls12Base) Verify(signature hotstuff.QuorumSignature, message []byte) bool {
+	s, ok := signature.(*AggregateSignature)
+	if !ok {
+		bls.logger.Panicf("cannot verify signature of incompatible type %T (expected %T)", signature, s)
+	}
+
+	n := s.Participants().Len()
+
+	if n == 1 {
+		id := firstParticipant(s.Participants())
+		pk, ok := bls.publicKey(id)
+		if !ok {
+			bls.logger.Warnf("Missing public key for ID %d", id)
+			return false
+		}
+		return bls.coreVerify(pk, message, &s.sig, domain)
+	}
+
+	// else if l > 1:
+	pks := make([]*PublicKey, 0, n)
+	s.Participants().RangeWhile(func(id hotstuff.ID) bool {
+		pk, ok := bls.publicKey(id)
+		if ok {
+			pks = append(pks, pk)
+			return true
+		}
+		bls.logger.Warnf("Missing public key for ID %d", id)
+		return false
+	})
+	if len(pks) != n {
 		return false
 	}
-	// if we managed to verify the aggregate signature, we just need to make sure that the number of verified signatures
-	// is a quorum.
-	return len(hashSet) >= bc.mods.Configuration().QuorumSize()
+	return bls.fastAggregateVerify(pks, message, &s.sig)
 }
 
-// TODO: should we check each signature's validity before aggregating?
-
-// CreateThresholdSignature creates a threshold signature from the given partial signatures.
-func (bc *bls12Crypto) CreateThresholdSignature(partialSignatures []consensus.Signature, _ consensus.Hash) (_ consensus.ThresholdSignature, err error) {
-	if len(partialSignatures) < bc.mods.Configuration().QuorumSize() {
-		return nil, crypto.ErrNotAQuorum
+// BatchVerify verifies the given quorum signature against the batch of messages.
+func (bls *bls12Base) BatchVerify(signature hotstuff.QuorumSignature, batch map[hotstuff.ID][]byte) bool {
+	s, ok := signature.(*AggregateSignature)
+	if !ok {
+		bls.logger.Panicf("cannot verify incompatible signature type %T (expected %T)", signature, s)
 	}
-	sigs := make(map[hotstuff.ID]*Signature, len(partialSignatures))
-	for _, sig := range partialSignatures {
-		if _, ok := sigs[sig.Signer()]; ok {
-			err = multierr.Append(err, crypto.ErrPartialDuplicate)
-			continue
-		}
-		s, ok := sig.(*Signature)
+
+	if s.Participants().Len() != len(batch) {
+		return false
+	}
+
+	pks := make([]*PublicKey, 0, len(batch))
+	msgs := make([][]byte, 0, len(batch))
+
+	for id, msg := range batch {
+		msgs = append(msgs, msg)
+		pk, ok := bls.publicKey(id)
 		if !ok {
-			err = multierr.Append(err, fmt.Errorf("%w: %T", crypto.ErrWrongType, s))
-			continue
+			bls.logger.Warnf("Missing public key for ID %d", id)
+			return false
 		}
-		sigs[sig.Signer()] = s
+		pks = append(pks, pk)
 	}
-	if len(sigs) < bc.mods.Configuration().QuorumSize() {
-		return nil, multierr.Combine(crypto.ErrNotAQuorum, err)
-	}
-	return bc.aggregateSignatures(sigs), nil
-}
 
-// CreateThresholdSignatureForMessageSet creates a threshold signature where each partial signature has signed a
-// different message hash.
-func (bc *bls12Crypto) CreateThresholdSignatureForMessageSet(partialSignatures []consensus.Signature, hashes map[hotstuff.ID]consensus.Hash) (consensus.ThresholdSignature, error) {
-	// Don't care about the hashes for signature aggregation.
-	return bc.CreateThresholdSignature(partialSignatures, consensus.Hash{})
+	if len(batch) == 1 {
+		return bls.coreVerify(pks[0], msgs[0], &s.sig, domain)
+	}
+
+	return bls.aggregateVerify(pks, msgs, &s.sig)
 }

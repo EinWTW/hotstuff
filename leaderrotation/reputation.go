@@ -2,12 +2,12 @@ package leaderrotation
 
 import (
 	"math/rand"
-	"sort"
+	"slices"
 
 	wr "github.com/mroth/weightedrand"
 
 	"github.com/relab/hotstuff"
-	"github.com/relab/hotstuff/consensus"
+	"github.com/relab/hotstuff/logging"
 	"github.com/relab/hotstuff/modules"
 )
 
@@ -18,30 +18,38 @@ func init() {
 type reputationsMap map[hotstuff.ID]float64
 
 type repBased struct {
-	mods           *consensus.Modules
-	prevCommitHead *consensus.Block
+	configuration  modules.Configuration
+	consensus      modules.Consensus
+	opts           *modules.Options
+	logger         logging.Logger
+	prevCommitHead *hotstuff.Block
 	reputations    reputationsMap // latest reputations
 }
 
-// InitConsensusModule gives the module a reference to the Modules object.
+// InitModule gives the module a reference to the Core object.
 // It also allows the module to set module options using the OptionsBuilder
-func (r *repBased) InitConsensusModule(mods *consensus.Modules, _ *consensus.OptionsBuilder) {
-	r.mods = mods
+func (r *repBased) InitModule(mods *modules.Core) {
+	mods.Get(
+		&r.configuration,
+		&r.consensus,
+		&r.opts,
+		&r.logger,
+	)
 }
 
 // TODO: should GetLeader be thread-safe?
 
 // GetLeader returns the id of the leader in the given view
-func (r *repBased) GetLeader(view consensus.View) hotstuff.ID {
-	block := r.mods.Consensus().CommittedBlock()
-	if block.View() > view-consensus.View(r.mods.Consensus().ChainLength()) {
+func (r *repBased) GetLeader(view hotstuff.View) hotstuff.ID {
+	block := r.consensus.CommittedBlock()
+	if block.View() > view-hotstuff.View(r.consensus.ChainLength()) {
 		// TODO: it could be possible to lookup leaders for older views if we
 		// store a copy of the reputations in a metadata field of each block.
-		r.mods.Logger().Error("looking up leaders of old views is not supported")
+		r.logger.Error("looking up leaders of old views is not supported")
 		return 0
 	}
 
-	numReplicas := r.mods.Configuration().Len()
+	numReplicas := r.configuration.Len()
 	// use round-robin for the first few views until we get a signature
 	if block.QuorumCert().Signature() == nil {
 		return chooseRoundRobin(view, numReplicas)
@@ -62,39 +70,41 @@ func (r *repBased) GetLeader(view consensus.View) hotstuff.ID {
 		if r.prevCommitHead.View() < block.View() {
 			r.reputations[voterID] += reputation
 		}
-		i := sort.Search(len(weights), func(i int) bool { return weights[i].Item.(hotstuff.ID) >= voterID })
-		weights = append(weights[:i+1], weights[i:]...)
-		weights[i] = wr.Choice{
+		weights = append(weights, wr.Choice{
 			Item:   voterID,
 			Weight: uint(r.reputations[voterID] * 10),
-		}
+		})
+	})
+
+	slices.SortFunc(weights, func(a, b wr.Choice) int {
+		return int(a.Item.(hotstuff.ID) - b.Item.(hotstuff.ID))
 	})
 
 	if r.prevCommitHead.View() < block.View() {
 		r.prevCommitHead = block
 	}
 
-	r.mods.Logger().Debug(weights)
+	r.logger.Debug(weights)
 
 	chooser, err := wr.NewChooser(weights...)
 	if err != nil {
-		r.mods.Logger().Error("weightedrand error: ", err)
+		r.logger.Error("weightedrand error: ", err)
 		return 0
 	}
 
-	seed := r.mods.Options().SharedRandomSeed() + int64(view)
+	seed := r.opts.SharedRandomSeed() + int64(view)
 	rnd := rand.New(rand.NewSource(seed))
 
 	leader := chooser.PickSource(rnd).(hotstuff.ID)
-	r.mods.Logger().Debugf("picked leader %d for view %d using seed %d", leader, view, seed)
+	r.logger.Debugf("picked leader %d for view %d using seed %d", leader, view, seed)
 
 	return leader
 }
 
 // NewRepBased returns a new random reputation-based leader rotation implementation
-func NewRepBased() consensus.LeaderRotation {
+func NewRepBased() modules.LeaderRotation {
 	return &repBased{
 		reputations:    make(reputationsMap),
-		prevCommitHead: consensus.GetGenesis(),
+		prevCommitHead: hotstuff.GetGenesis(),
 	}
 }

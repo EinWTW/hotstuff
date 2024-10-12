@@ -19,8 +19,10 @@ import (
 	"github.com/relab/hotstuff/consensus/byzantine"
 	"github.com/relab/hotstuff/crypto"
 	"github.com/relab/hotstuff/crypto/keygen"
+	"github.com/relab/hotstuff/eventloop"
 	"github.com/relab/hotstuff/internal/proto/orchestrationpb"
 	"github.com/relab/hotstuff/internal/protostream"
+	"github.com/relab/hotstuff/logging"
 	"github.com/relab/hotstuff/metrics"
 	"github.com/relab/hotstuff/metrics/types"
 	"github.com/relab/hotstuff/modules"
@@ -37,6 +39,8 @@ import (
 	_ "github.com/relab/hotstuff/consensus/simplehotstuff"
 	_ "github.com/relab/hotstuff/crypto/bls12"
 	_ "github.com/relab/hotstuff/crypto/ecdsa"
+	_ "github.com/relab/hotstuff/crypto/eddsa"
+	_ "github.com/relab/hotstuff/handel"
 	_ "github.com/relab/hotstuff/leaderrotation"
 )
 
@@ -45,7 +49,7 @@ type Worker struct {
 	send *protostream.Writer
 	recv *protostream.Reader
 
-	metricsLogger       modules.MetricsLogger
+	metricsLogger       metrics.Logger
 	metrics             []string
 	measurementInterval time.Duration
 
@@ -90,7 +94,7 @@ func (w *Worker) Run() error {
 }
 
 // NewWorker returns a new worker.
-func NewWorker(send *protostream.Writer, recv *protostream.Reader, dl modules.MetricsLogger, metrics []string, measurementInterval time.Duration) Worker {
+func NewWorker(send *protostream.Writer, recv *protostream.Reader, dl metrics.Logger, metrics []string, measurementInterval time.Duration) Worker {
 	return Worker{
 		send:                send,
 		recv:                recv,
@@ -160,27 +164,28 @@ func (w *Worker) createReplica(opts *orchestrationpb.ReplicaOpts) (*replica.Repl
 		rootCAs.AppendCertsFromPEM(opts.GetCertificateAuthority())
 	}
 	// prepare modules
-	builder := consensus.NewBuilder(hotstuff.ID(opts.GetID()), privKey)
+	builder := modules.NewBuilder(hotstuff.ID(opts.GetID()), privKey)
 
-	var consensusRules consensus.Rules
-	if !modules.GetModule(opts.GetConsensus(), &consensusRules) {
+	consensusRules, ok := modules.GetModule[consensus.Rules](opts.GetConsensus())
+	if !ok {
 		return nil, fmt.Errorf("invalid consensus name: '%s'", opts.GetConsensus())
 	}
 
-	var byz byzantine.Byzantine
-	if modules.GetModule(opts.GetByzantineStrategy(), &byz) {
-		consensusRules = byz.Wrap(consensusRules)
-	} else if opts.GetByzantineStrategy() != "" {
-		return nil, fmt.Errorf("invalid byzantine strategy: '%s'", opts.GetByzantineStrategy())
+	if opts.GetByzantineStrategy() != "" {
+		if byz, ok := modules.GetModule[byzantine.Byzantine](opts.GetByzantineStrategy()); ok {
+			consensusRules = byz.Wrap(consensusRules)
+		} else {
+			return nil, fmt.Errorf("invalid byzantine strategy: '%s'", opts.GetByzantineStrategy())
+		}
 	}
 
-	var cryptoImpl consensus.CryptoImpl
-	if !modules.GetModule(opts.GetCrypto(), &cryptoImpl) {
+	cryptoImpl, ok := modules.GetModule[modules.CryptoBase](opts.GetCrypto())
+	if !ok {
 		return nil, fmt.Errorf("invalid crypto name: '%s'", opts.GetCrypto())
 	}
 
-	var leaderRotation consensus.LeaderRotation
-	if !modules.GetModule(opts.GetLeaderRotation(), &leaderRotation) {
+	leaderRotation, ok := modules.GetModule[modules.LeaderRotation](opts.GetLeaderRotation())
+	if !ok {
 		return nil, fmt.Errorf("invalid leader-rotation algorithm: '%s'", opts.GetLeaderRotation())
 	}
 
@@ -190,37 +195,49 @@ func (w *Worker) createReplica(opts *orchestrationpb.ReplicaOpts) (*replica.Repl
 		float64(opts.GetMaxTimeout().AsDuration().Nanoseconds())/float64(time.Millisecond),
 		float64(opts.GetTimeoutMultiplier()),
 	))
-
-	builder.Register(
+	builder.Add(
+		eventloop.New(1000),
 		consensus.New(consensusRules),
+		consensus.NewVotingMachine(),
 		crypto.NewCache(cryptoImpl, 100), // TODO: consider making this configurable
 		leaderRotation,
 		sync,
 		w.metricsLogger,
 		blockchain.New(),
+		logging.New("hs"+strconv.Itoa(int(opts.GetID()))),
 	)
-
-	builder.OptionsBuilder().SetSharedRandomSeed(opts.GetSharedSeed())
-
+	builder.Options().SetSharedRandomSeed(opts.GetSharedSeed())
 	if w.measurementInterval > 0 {
 		replicaMetrics := metrics.GetReplicaMetrics(w.metrics...)
-		builder.Register(replicaMetrics...)
-		builder.Register(metrics.NewTicker(w.measurementInterval))
+		builder.Add(replicaMetrics...)
+		builder.Add(metrics.NewTicker(w.measurementInterval))
 	}
 
+	for _, n := range opts.GetModules() {
+		m, ok := modules.GetModuleUntyped(n)
+		if !ok {
+			return nil, fmt.Errorf("no module named '%s'", n)
+		}
+		builder.Add(m)
+	}
+	// convert location info map key from uint32 to hotstuff.ID
+	locationInfo := make(map[hotstuff.ID]string)
+	for k, v := range opts.GetLocationInfo() {
+		locationInfo[hotstuff.ID(k)] = v
+	}
 	c := replica.Config{
-		ID:          hotstuff.ID(opts.GetID()),
-		PrivateKey:  privKey,
-		TLS:         opts.GetUseTLS(),
-		Certificate: &certificate,
-		RootCAs:     rootCAs,
-		BatchSize:   opts.GetBatchSize(),
+		ID:           hotstuff.ID(opts.GetID()),
+		PrivateKey:   privKey,
+		TLS:          opts.GetUseTLS(),
+		Certificate:  &certificate,
+		RootCAs:      rootCAs,
+		LocationInfo: locationInfo,
+		BatchSize:    opts.GetBatchSize(),
 		ManagerOptions: []gorums.ManagerOption{
 			gorums.WithDialTimeout(opts.GetConnectTimeout().AsDuration()),
 			gorums.WithGrpcDialOptions(grpc.WithReturnConnectionError()),
 		},
 	}
-
 	return replica.New(c, builder), nil
 }
 
@@ -238,6 +255,7 @@ func (w *Worker) startReplicas(req *orchestrationpb.StartReplicaRequest) (*orche
 		if err != nil {
 			return nil, err
 		}
+
 		defer func(id uint32) {
 			w.metricsLogger.Log(&types.StartEvent{Event: types.NewReplicaEvent(id, time.Now())})
 			replica.Start()
@@ -249,6 +267,7 @@ func (w *Worker) startReplicas(req *orchestrationpb.StartReplicaRequest) (*orche
 func (w *Worker) stopReplicas(req *orchestrationpb.StopReplicaRequest) (*orchestrationpb.StopReplicaResponse, error) {
 	res := &orchestrationpb.StopReplicaResponse{
 		Hashes: make(map[uint32][]byte),
+		Counts: make(map[uint32]uint32),
 	}
 	for _, id := range req.GetIDs() {
 		r, ok := w.replicas[hotstuff.ID(id)]
@@ -257,6 +276,7 @@ func (w *Worker) stopReplicas(req *orchestrationpb.StopReplicaRequest) (*orchest
 		}
 		r.Stop()
 		res.Hashes[id] = r.GetHash()
+		res.Counts[id] = r.GetCmdCount()
 		// TODO: return test results
 	}
 	return res, nil
@@ -270,7 +290,6 @@ func (w *Worker) startClients(req *orchestrationpb.StartClientRequest) (*orchest
 		w.metricsLogger.Log(opts)
 
 		c := client.Config{
-			ID:            hotstuff.ID(opts.GetID()),
 			TLS:           opts.GetUseTLS(),
 			RootCAs:       cp,
 			MaxConcurrent: opts.GetMaxConcurrent(),
@@ -283,16 +302,19 @@ func (w *Worker) startClients(req *orchestrationpb.StartClientRequest) (*orchest
 			RateLimit:        opts.GetRateLimit(),
 			RateStep:         opts.GetRateStep(),
 			RateStepInterval: opts.GetRateStepInterval().AsDuration(),
+			Timeout:          opts.GetTimeout().AsDuration(),
 		}
-		mods := modules.NewBuilder(c.ID)
+		mods := modules.NewBuilder(hotstuff.ID(opts.GetID()), nil)
+		mods.Add(eventloop.New(1000))
 
 		if w.measurementInterval > 0 {
 			clientMetrics := metrics.GetClientMetrics(w.metrics...)
-			mods.Register(clientMetrics...)
-			mods.Register(metrics.NewTicker(w.measurementInterval))
+			mods.Add(clientMetrics...)
+			mods.Add(metrics.NewTicker(w.measurementInterval))
 		}
 
-		mods.Register(w.metricsLogger)
+		mods.Add(w.metricsLogger)
+		mods.Add(logging.New("cli" + strconv.Itoa(int(opts.GetID()))))
 		cli := client.New(c, mods)
 		cfg, err := getConfiguration(req.GetConfiguration(), true)
 		if err != nil {
@@ -303,7 +325,7 @@ func (w *Worker) startClients(req *orchestrationpb.StartClientRequest) (*orchest
 			return nil, err
 		}
 		cli.Start()
-		w.metricsLogger.Log(&types.StartEvent{Event: types.NewClientEvent(uint32(c.ID), time.Now())})
+		w.metricsLogger.Log(&types.StartEvent{Event: types.NewClientEvent(opts.GetID(), time.Now())})
 		w.clients[hotstuff.ID(opts.GetID())] = cli
 	}
 	return &orchestrationpb.StartClientResponse{}, nil

@@ -6,24 +6,30 @@ import (
 	"net"
 	"sync"
 
-	"github.com/golang/protobuf/ptypes/empty"
+	"github.com/relab/hotstuff"
+
 	"github.com/relab/gorums"
-	"github.com/relab/hotstuff/consensus"
+	"github.com/relab/hotstuff/eventloop"
 	"github.com/relab/hotstuff/internal/proto/clientpb"
+	"github.com/relab/hotstuff/logging"
 	"github.com/relab/hotstuff/modules"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // clientSrv serves a client.
 type clientSrv struct {
+	eventLoop *eventloop.EventLoop
+	logger    logging.Logger
+
 	mut          sync.Mutex
-	mods         *modules.Modules
 	srv          *gorums.Server
 	awaitingCmds map[cmdID]chan<- error
 	cmdCache     *cmdCache
 	hash         hash.Hash
+	cmdCount     uint32
 }
 
 // newClientServer returns a new client server.
@@ -39,8 +45,11 @@ func newClientServer(conf Config, srvOpts []gorums.ServerOption) (srv *clientSrv
 }
 
 // InitModule gives the module access to the other modules.
-func (srv *clientSrv) InitModule(mods *modules.Modules) {
-	srv.mods = mods
+func (srv *clientSrv) InitModule(mods *modules.Core) {
+	mods.Get(
+		&srv.eventLoop,
+		&srv.logger,
+	)
 	srv.cmdCache.InitModule(mods)
 }
 
@@ -57,7 +66,7 @@ func (srv *clientSrv) StartOnListener(lis net.Listener) {
 	go func() {
 		err := srv.srv.Serve(lis)
 		if err != nil {
-			srv.mods.Logger().Error(err)
+			srv.logger.Error(err)
 		}
 	}()
 }
@@ -66,7 +75,7 @@ func (srv *clientSrv) Stop() {
 	srv.srv.Stop()
 }
 
-func (srv *clientSrv) ExecCommand(ctx gorums.ServerCtx, cmd *clientpb.Command) (*empty.Empty, error) {
+func (srv *clientSrv) ExecCommand(ctx gorums.ServerCtx, cmd *clientpb.Command) (*emptypb.Empty, error) {
 	id := cmdID{cmd.ClientID, cmd.SequenceNumber}
 
 	c := make(chan error)
@@ -77,24 +86,22 @@ func (srv *clientSrv) ExecCommand(ctx gorums.ServerCtx, cmd *clientpb.Command) (
 	srv.cmdCache.addCommand(cmd)
 	ctx.Release()
 	err := <-c
-	return &empty.Empty{}, err
+	return &emptypb.Empty{}, err
 }
 
-func (srv *clientSrv) Exec(cmd consensus.Command) {
+func (srv *clientSrv) Exec(cmd hotstuff.Command) {
 	batch := new(clientpb.Batch)
 	err := proto.UnmarshalOptions{AllowPartial: true}.Unmarshal([]byte(cmd), batch)
 	if err != nil {
-		srv.mods.Logger().Errorf("Failed to unmarshal command: %v", err)
+		srv.logger.Errorf("Failed to unmarshal command: %v", err)
 		return
 	}
 
-	srv.mods.EventLoop().AddEvent(consensus.CommitEvent{Commands: len(batch.GetCommands())})
+	srv.eventLoop.AddEvent(hotstuff.CommitEvent{Commands: len(batch.GetCommands())})
 
 	for _, cmd := range batch.GetCommands() {
 		_, _ = srv.hash.Write(cmd.Data)
-		if err != nil {
-			srv.mods.Logger().Errorf("Error writing data: %v", err)
-		}
+		srv.cmdCount++
 		srv.mut.Lock()
 		id := cmdID{cmd.GetClientID(), cmd.GetSequenceNumber()}
 		if done, ok := srv.awaitingCmds[id]; ok {
@@ -103,13 +110,15 @@ func (srv *clientSrv) Exec(cmd consensus.Command) {
 		}
 		srv.mut.Unlock()
 	}
+
+	srv.logger.Debugf("Hash: %.8x", srv.hash.Sum(nil))
 }
 
-func (srv *clientSrv) Fork(cmd consensus.Command) {
+func (srv *clientSrv) Fork(cmd hotstuff.Command) {
 	batch := new(clientpb.Batch)
 	err := proto.UnmarshalOptions{AllowPartial: true}.Unmarshal([]byte(cmd), batch)
 	if err != nil {
-		srv.mods.Logger().Errorf("Failed to unmarshal command: %v", err)
+		srv.logger.Errorf("Failed to unmarshal command: %v", err)
 		return
 	}
 

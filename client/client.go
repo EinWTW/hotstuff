@@ -9,14 +9,13 @@ import (
 	"errors"
 	"io"
 	"math"
-	"strconv"
 	"sync"
 	"time"
 
-	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/relab/gorums"
 	"github.com/relab/hotstuff"
 	"github.com/relab/hotstuff/backend"
+	"github.com/relab/hotstuff/eventloop"
 	"github.com/relab/hotstuff/internal/proto/clientpb"
 	"github.com/relab/hotstuff/logging"
 	"github.com/relab/hotstuff/modules"
@@ -24,28 +23,29 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 type qspec struct {
 	faulty int
 }
 
-func (q *qspec) ExecCommandQF(_ *clientpb.Command, signatures map[uint32]*empty.Empty) (*empty.Empty, bool) {
+func (q *qspec) ExecCommandQF(_ *clientpb.Command, signatures map[uint32]*emptypb.Empty) (*emptypb.Empty, bool) {
 	if len(signatures) < q.faulty+1 {
 		return nil, false
 	}
-	return &empty.Empty{}, true
+	return &emptypb.Empty{}, true
 }
 
 type pendingCmd struct {
 	sequenceNumber uint64
 	sendTime       time.Time
 	promise        *clientpb.AsyncEmpty
+	cancelCtx      context.CancelFunc
 }
 
 // Config contains config options for a client.
 type Config struct {
-	ID               hotstuff.ID
 	TLS              bool
 	RootCAs          *x509.CertPool
 	MaxConcurrent    uint32
@@ -55,13 +55,16 @@ type Config struct {
 	RateLimit        float64       // initial rate limit
 	RateStep         float64       // rate limit step up
 	RateStepInterval time.Duration // step up interval
+	Timeout          time.Duration
 }
 
 // Client is a hotstuff client.
 type Client struct {
+	eventLoop *eventloop.EventLoop
+	logger    logging.Logger
+	opts      *modules.Options
+
 	mut              sync.Mutex
-	id               hotstuff.ID
-	mods             *modules.Modules
 	mgr              *clientpb.Manager
 	gorumsConfig     *clientpb.Configuration
 	payloadSize      uint32
@@ -73,24 +76,35 @@ type Client struct {
 	limiter          *rate.Limiter
 	stepUp           float64
 	stepUpInterval   time.Duration
+	timeout          time.Duration
+}
+
+// InitModule initializes the client.
+func (c *Client) InitModule(mods *modules.Core) {
+	mods.Get(
+		&c.eventLoop,
+		&c.logger,
+		&c.opts,
+	)
 }
 
 // New returns a new Client.
 func New(conf Config, builder modules.Builder) (client *Client) {
-	builder.Register(logging.New("cli" + strconv.Itoa(int(conf.ID))))
-	mods := builder.Build()
-
 	client = &Client{
-		id:               conf.ID,
-		mods:             mods,
 		pendingCmds:      make(chan pendingCmd, conf.MaxConcurrent),
 		highestCommitted: 1,
 		done:             make(chan struct{}),
 		reader:           conf.Input,
+		payloadSize:      conf.PayloadSize,
 		limiter:          rate.NewLimiter(rate.Limit(conf.RateLimit), 1),
 		stepUp:           conf.RateStep,
 		stepUpInterval:   conf.RateStepInterval,
+		timeout:          conf.Timeout,
 	}
+
+	builder.Add(client)
+
+	builder.Build()
 
 	grpcOpts := []grpc.DialOption{grpc.WithBlock()}
 
@@ -126,31 +140,37 @@ func (c *Client) Connect(replicas []backend.ReplicaInfo) (err error) {
 
 // Run runs the client until the context is closed.
 func (c *Client) Run(ctx context.Context) {
+	type stats struct {
+		executed int
+		failed   int
+		timeout  int
+	}
+
 	eventLoopDone := make(chan struct{})
 	go func() {
-		c.mods.EventLoop().Run(ctx)
+		c.eventLoop.Run(ctx)
 		close(eventLoopDone)
 	}()
-	c.mods.Logger().Info("Starting to send commands")
+	c.logger.Info("Starting to send commands")
 
-	commandStatsChan := make(chan struct{ executed, failed int })
+	commandStatsChan := make(chan stats)
 	// start the command handler
 	go func() {
-		executed, failed := c.handleCommands(ctx)
-		commandStatsChan <- struct {
-			executed int
-			failed   int
-		}{executed, failed}
+		executed, failed, timeout := c.handleCommands(ctx)
+		commandStatsChan <- stats{executed, failed, timeout}
 	}()
 
 	err := c.sendCommands(ctx)
 	if err != nil && !errors.Is(err, io.EOF) {
-		c.mods.Logger().Panicf("Failed to send commands: %v", err)
+		c.logger.Panicf("Failed to send commands: %v", err)
 	}
 	c.close()
 
-	stats := <-commandStatsChan
-	c.mods.Logger().Infof("Done sending commands (executed: %d, failed: %d)", stats.executed, stats.failed)
+	commandStats := <-commandStatsChan
+	c.logger.Infof(
+		"Done sending commands (executed: %d, failed: %d, timeouts: %d)",
+		commandStats.executed, commandStats.failed, commandStats.timeout,
+	)
 	<-eventLoopDone
 	close(c.done)
 }
@@ -172,7 +192,7 @@ func (c *Client) close() {
 	c.mgr.Close()
 	err := c.reader.Close()
 	if err != nil {
-		c.mods.Logger().Warn("Failed to close reader: ", err)
+		c.logger.Warn("Failed to close reader: ", err)
 	}
 }
 
@@ -217,26 +237,28 @@ loop:
 			return err
 		} else if err == io.EOF && n == 0 && lastCommand > num {
 			lastCommand = num
-			c.mods.Logger().Info("Reached end of file. Sending empty commands until last command is executed...")
+			c.logger.Info("Reached end of file. Sending empty commands until last command is executed...")
 		}
 
 		cmd := &clientpb.Command{
-			ClientID:       uint32(c.id),
+			ClientID:       uint32(c.opts.ID()),
 			SequenceNumber: num,
 			Data:           data[:n],
 		}
 
+		ctx, cancel := context.WithTimeout(ctx, c.timeout)
 		promise := c.gorumsConfig.ExecCommand(ctx, cmd)
+		pending := pendingCmd{sequenceNumber: num, sendTime: time.Now(), promise: promise, cancelCtx: cancel}
 
 		num++
 		select {
-		case c.pendingCmds <- pendingCmd{sequenceNumber: num, sendTime: time.Now(), promise: promise}:
+		case c.pendingCmds <- pending:
 		case <-ctx.Done():
 			break loop
 		}
 
 		if num%100 == 0 {
-			c.mods.Logger().Infof("%d commands sent", num)
+			c.logger.Infof("%d commands sent", num)
 		}
 
 	}
@@ -246,7 +268,7 @@ loop:
 // handleCommands will get pending commands from the pendingCmds channel and then
 // handle them as they become acknowledged by the replicas. We expect the commands to be
 // acknowledged in the order that they were sent.
-func (c *Client) handleCommands(ctx context.Context) (executed, failed int) {
+func (c *Client) handleCommands(ctx context.Context) (executed, failed, timeout int) {
 	for {
 		var (
 			cmd pendingCmd
@@ -263,8 +285,11 @@ func (c *Client) handleCommands(ctx context.Context) (executed, failed int) {
 		_, err := cmd.promise.Get()
 		if err != nil {
 			qcError, ok := err.(gorums.QuorumCallError)
-			if !ok || qcError.Reason != context.Canceled.Error() {
-				c.mods.Logger().Debugf("Did not get enough replies for command: %v\n", err)
+			if ok && qcError.Reason == context.DeadlineExceeded.Error() {
+				c.logger.Debug("Command timed out.")
+				timeout++
+			} else if !ok || qcError.Reason != context.Canceled.Error() {
+				c.logger.Debugf("Did not get enough replies for command: %v\n", err)
 				failed++
 			}
 		} else {
@@ -277,7 +302,7 @@ func (c *Client) handleCommands(ctx context.Context) (executed, failed int) {
 		c.mut.Unlock()
 
 		duration := time.Since(cmd.sendTime)
-		c.mods.EventLoop().AddEvent(LatencyMeasurementEvent{Latency: duration})
+		c.eventLoop.AddEvent(LatencyMeasurementEvent{Latency: duration})
 	}
 }
 

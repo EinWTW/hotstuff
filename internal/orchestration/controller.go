@@ -4,28 +4,36 @@ import (
 	"bytes"
 	"crypto/ecdsa"
 	"crypto/x509"
+	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
 	"net"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/relab/hotstuff"
 	"github.com/relab/hotstuff/crypto/keygen"
 	"github.com/relab/hotstuff/internal/proto/orchestrationpb"
-	"go.uber.org/multierr"
+	"github.com/relab/hotstuff/logging"
 	"google.golang.org/protobuf/proto"
 )
 
 // HostConfig specifies the number of replicas and clients that should be started on a specific host.
 type HostConfig struct {
-	Replicas int
-	Clients  int
+	Name            string
+	Clients         int
+	Replicas        int
+	Location        string
+	InternalAddress string `mapstructure:"internal-address"`
 }
 
 // Experiment holds variables for an experiment.
 type Experiment struct {
 	*orchestrationpb.ReplicaOpts
 	*orchestrationpb.ClientOpts
+
+	Logger logging.Logger
 
 	NumReplicas int
 	NumClients  int
@@ -34,12 +42,13 @@ type Experiment struct {
 	Hosts       map[string]RemoteWorker
 	HostConfigs map[string]HostConfig
 	Byzantine   map[string]int // number of replicas to assign to each byzantine strategy
+	Output      string         // path to output folder
 
 	// the host associated with each replica.
 	hostsToReplicas map[string][]hotstuff.ID
 	// the host associated with each client.
-	replicaOpts    map[hotstuff.ID]*orchestrationpb.ReplicaOpts
 	hostsToClients map[string][]hotstuff.ID
+	replicaOpts    map[hotstuff.ID]*orchestrationpb.ReplicaOpts
 	caKey          *ecdsa.PrivateKey
 	ca             *x509.Certificate
 }
@@ -58,16 +67,26 @@ func (e *Experiment) Run() (err error) {
 		return err
 	}
 
+	if e.Output != "" {
+		err = e.writeAssignmentsFile()
+		if err != nil {
+			return err
+		}
+	}
+
+	e.Logger.Info("Creating replicas...")
 	cfg, err := e.createReplicas()
 	if err != nil {
 		return fmt.Errorf("failed to create replicas: %w", err)
 	}
 
+	e.Logger.Info("Starting replicas...")
 	err = e.startReplicas(cfg)
 	if err != nil {
 		return fmt.Errorf("failed to start replicas: %w", err)
 	}
 
+	e.Logger.Info("Starting clients...")
 	err = e.startClients(cfg)
 	if err != nil {
 		return fmt.Errorf("failed to start clients: %w", err)
@@ -75,11 +94,18 @@ func (e *Experiment) Run() (err error) {
 
 	time.Sleep(e.Duration)
 
+	e.Logger.Info("Stopping clients...")
 	err = e.stopClients()
 	if err != nil {
 		return fmt.Errorf("failed to stop clients: %w", err)
 	}
 
+	wait := 5 * e.ReplicaOpts.GetInitialTimeout().AsDuration()
+	e.Logger.Infof("Waiting %s for replicas to finish.", wait)
+	// give the replicas some time to commit the last batch
+	time.Sleep(wait)
+
+	e.Logger.Info("Stopping replicas...")
 	err = e.stopReplicas()
 	if err != nil {
 		return fmt.Errorf("failed to stop replicas: %w", err)
@@ -97,25 +123,33 @@ func (e *Experiment) createReplicas() (cfg *orchestrationpb.ReplicaConfiguration
 	cfg = &orchestrationpb.ReplicaConfiguration{Replicas: make(map[uint32]*orchestrationpb.ReplicaInfo)}
 
 	for host, worker := range e.Hosts {
+		internalAddr := e.HostConfigs[host].InternalAddress
+
 		req := &orchestrationpb.CreateReplicaRequest{Replicas: make(map[uint32]*orchestrationpb.ReplicaOpts)}
 		for _, id := range e.hostsToReplicas[host] {
 			opts := e.replicaOpts[id]
 			opts.CertificateAuthority = keygen.CertToPEM(e.ca)
 
 			// the generated certificate should be valid for the hostname and its ip addresses.
-			validFor := []string{host}
+			validFor := []string{"localhost", "127.0.0.1", "127.0.1.1", host}
 			ips, err := net.LookupIP(host)
 			if err == nil {
 				for _, ip := range ips {
-					validFor = append(validFor, ip.String())
+					if ipStr := ip.String(); ipStr != host && ipStr != internalAddr {
+						validFor = append(validFor, ipStr)
+					}
 				}
+			}
+
+			// add the internal address as well
+			if internalAddr != "" {
+				validFor = append(validFor, internalAddr)
 			}
 
 			keyChain, err := keygen.GenerateKeyChain(id, validFor, e.Crypto, e.ca, e.caKey)
 			if err != nil {
 				return nil, fmt.Errorf("failed to generate keychain: %w", err)
 			}
-
 			opts.PrivateKey = keyChain.PrivateKey
 			opts.PublicKey = keyChain.PublicKey
 			opts.Certificate = keyChain.Certificate
@@ -128,7 +162,12 @@ func (e *Experiment) createReplicas() (cfg *orchestrationpb.ReplicaConfiguration
 		}
 
 		for id, replicaCfg := range wcfg.GetReplicas() {
-			replicaCfg.Address = host
+			if internalAddr != "" {
+				replicaCfg.Address = internalAddr
+			} else {
+				replicaCfg.Address = host
+			}
+			e.Logger.Debugf("Address for replica %d: %s", id, replicaCfg.Address)
 			cfg.Replicas[id] = replicaCfg
 		}
 	}
@@ -142,7 +181,7 @@ func (e *Experiment) assignReplicasAndClients() (err error) {
 	e.hostsToReplicas = make(map[string][]hotstuff.ID)
 	e.replicaOpts = make(map[hotstuff.ID]*orchestrationpb.ReplicaOpts)
 	e.hostsToClients = make(map[string][]hotstuff.ID)
-
+	replicaLocationInfo := make(map[uint32]string)
 	nextReplicaID := hotstuff.ID(1)
 	nextClientID := hotstuff.ID(1)
 
@@ -156,6 +195,10 @@ func (e *Experiment) assignReplicasAndClients() (err error) {
 	// determine how many replicas should be assigned automatically
 	for _, hostCfg := range e.HostConfigs {
 		// TODO: ensure that this host is part of e.Hosts
+		if hostCfg.Clients|hostCfg.Replicas == 0 {
+			// if both are zero, we'll autoconfigure this host.
+			continue
+		}
 		remainingReplicas -= hostCfg.Replicas
 		remainingClients -= hostCfg.Clients
 		autoConfig--
@@ -193,10 +236,12 @@ func (e *Experiment) assignReplicasAndClients() (err error) {
 		var (
 			numReplicas int
 			numClients  int
+			location    string
 		)
-		if hostCfg, ok := e.HostConfigs[host]; ok {
+		if hostCfg, ok := e.HostConfigs[host]; ok && hostCfg.Clients|hostCfg.Replicas != 0 {
 			numReplicas = hostCfg.Replicas
 			numClients = hostCfg.Clients
+			location = hostCfg.Location
 		} else {
 			numReplicas = replicasPerNode
 			remainingReplicas -= replicasPerNode
@@ -212,6 +257,7 @@ func (e *Experiment) assignReplicasAndClients() (err error) {
 				remainderClients--
 				remainingClients--
 			}
+			location = "default"
 		}
 
 		for i := 0; i < numReplicas; i++ {
@@ -227,25 +273,53 @@ func (e *Experiment) assignReplicasAndClients() (err error) {
 			replicaOpts := proto.Clone(e.ReplicaOpts).(*orchestrationpb.ReplicaOpts)
 			replicaOpts.ID = uint32(nextReplicaID)
 			replicaOpts.ByzantineStrategy = byzantineStrategy
-
+			replicaLocationInfo[replicaOpts.ID] = location
+			// all replicaOpts share the same LocationInfo map, which is progressively updated
+			replicaOpts.LocationInfo = replicaLocationInfo
 			e.hostsToReplicas[host] = append(e.hostsToReplicas[host], nextReplicaID)
 			e.replicaOpts[nextReplicaID] = replicaOpts
-			log.Printf("replica %d assigned to host %s", nextReplicaID, host)
+			e.Logger.Infof("replica %d assigned to host %s", nextReplicaID, host)
 			nextReplicaID++
 		}
 
 		for i := 0; i < numClients; i++ {
 			e.hostsToClients[host] = append(e.hostsToClients[host], nextClientID)
-			log.Printf("client %d assigned to host %s", nextClientID, host)
+			e.Logger.Infof("client %d assigned to host %s", nextClientID, host)
 			nextClientID++
 		}
 	}
+
 	// TODO: warn if not all clients/replicas were assigned
 	return nil
 }
 
+type assignmentsFileContents struct {
+	// the host associated with each replica.
+	HostsToReplicas map[string][]hotstuff.ID
+	// the host associated with each client.
+	HostsToClients map[string][]hotstuff.ID
+}
+
+func (e *Experiment) writeAssignmentsFile() (err error) {
+	f, err := os.OpenFile(filepath.Join(e.Output, "hosts.json"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}()
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "\t")
+	return enc.Encode(assignmentsFileContents{
+		HostsToReplicas: e.hostsToReplicas,
+		HostsToClients:  e.hostsToClients,
+	})
+}
+
 func (e *Experiment) startReplicas(cfg *orchestrationpb.ReplicaConfiguration) (err error) {
-	errors := make(chan error)
+	errs := make(chan error)
 	for host, worker := range e.Hosts {
 		go func(host string, worker RemoteWorker) {
 			req := &orchestrationpb.StartReplicaRequest{
@@ -253,34 +327,46 @@ func (e *Experiment) startReplicas(cfg *orchestrationpb.ReplicaConfiguration) (e
 				IDs:           getIDs(host, e.hostsToReplicas),
 			}
 			_, err := worker.StartReplica(req)
-			errors <- err
+			errs <- err
 		}(host, worker)
 	}
 	for range e.Hosts {
-		err = multierr.Append(err, <-errors)
+		err = errors.Join(err, <-errs)
 	}
 	return err
 }
 
 func (e *Experiment) stopReplicas() error {
-	hashes := make(map[uint32][]byte)
+	responses := make([]*orchestrationpb.StopReplicaResponse, 0)
 	for host, worker := range e.Hosts {
 		req := &orchestrationpb.StopReplicaRequest{IDs: getIDs(host, e.hostsToReplicas)}
 		res, err := worker.StopReplica(req)
 		if err != nil {
 			return err
 		}
-		for id, hash := range res.GetHashes() {
-			hashes[id] = hash
+		responses = append(responses, res)
+	}
+	return verifyStopResponses(responses)
+}
+
+func verifyStopResponses(responses []*orchestrationpb.StopReplicaResponse) error {
+	results := make(map[uint32][][]byte)
+	for _, response := range responses {
+		commandCount := response.GetCounts()
+		hashes := response.GetHashes()
+		for id, count := range commandCount {
+			if len(results[count]) == 0 {
+				results[count] = make([][]byte, 0)
+			}
+			results[count] = append(results[count], hashes[id])
 		}
 	}
-	var cmp []byte
-	for _, hash := range hashes {
-		if cmp == nil {
-			cmp = hash
-		}
-		if !bytes.Equal(cmp, hash) {
-			return fmt.Errorf("hash mismatch")
+	for cmdCount, hashes := range results {
+		firstHash := hashes[0]
+		for _, hash := range hashes {
+			if !bytes.Equal(firstHash, hash) {
+				return fmt.Errorf("hash mismatch at command: %d", cmdCount)
+			}
 		}
 	}
 	return nil

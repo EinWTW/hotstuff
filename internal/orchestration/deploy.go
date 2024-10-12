@@ -8,6 +8,7 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -19,7 +20,6 @@ import (
 
 	"github.com/relab/iago"
 	fs "github.com/relab/wrfs"
-	"go.uber.org/multierr"
 )
 
 // DeployConfig contains configuration options for deployment.
@@ -56,20 +56,17 @@ func Deploy(g iago.Group, cfg DeployConfig) (workers map[string]WorkerSession, e
 		panic(err)
 	}
 
-	tmpDir := "hotstuff." + randString(8)
-
 	g.Run("Create temporary directory",
-		func(ctx context.Context, host iago.Host) (err error) {
+		func(_ context.Context, host iago.Host) error {
+			tmpDir := "hotstuff." + randString(8)
 			testDir := strings.TrimPrefix(tempDirPath(host, tmpDir), "/")
 			dataDir := testDir + "/data"
 			host.SetVar("test-dir", testDir)
 			host.SetVar("data-dir", dataDir)
-			err = fs.MkdirAll(host.GetFS(), dataDir, 0755)
-			return err
+			return fs.MkdirAll(host.GetFS(), dataDir, 0o755)
 		})
 
-	g.Run(
-		"Upload hotstuff binary",
+	g.Run("Upload hotstuff binary",
 		func(ctx context.Context, host iago.Host) (err error) {
 			dest, err := iago.NewPath("/", iago.GetStringVar(host, "test-dir")+"/hotstuff")
 			if err != nil {
@@ -83,7 +80,7 @@ func Deploy(g iago.Group, cfg DeployConfig) (workers map[string]WorkerSession, e
 			return iago.Upload{
 				Src:  src,
 				Dest: dest,
-				Perm: iago.NewPerm(0755),
+				Perm: iago.NewPerm(0o755),
 			}.Apply(ctx, host)
 		})
 
@@ -107,7 +104,7 @@ func FetchData(g iago.Group, dest string) (err error) {
 	if dest != "" {
 		g.Run("Download test data",
 			func(ctx context.Context, host iago.Host) (err error) {
-				src, err := iago.NewPathFromAbs(iago.GetStringVar(host, "data-dir")) // assuming the dir variable was set earlier
+				src, err := iago.NewPath("/", iago.GetStringVar(host, "data-dir")) // assuming the dir variable was set earlier
 				if err != nil {
 					return err
 				}
@@ -123,9 +120,8 @@ func FetchData(g iago.Group, dest string) (err error) {
 	}
 
 	g.Run("Remove test directory",
-		func(ctx context.Context, host iago.Host) (err error) {
-			err = fs.RemoveAll(host.GetFS(), iago.GetStringVar(host, "test-dir"))
-			return err
+		func(_ context.Context, host iago.Host) error {
+			return fs.RemoveAll(host.GetFS(), iago.GetStringVar(host, "test-dir"))
 		})
 
 	return nil
@@ -156,16 +152,16 @@ func (ws WorkerSession) Stderr() io.Reader {
 
 // Close closes the session and all of its streams.
 func (ws WorkerSession) Close() (err error) {
-	err = multierr.Append(err, ws.cmd.Wait())
+	err = ws.cmd.Wait()
 	// apparently, closing the streams can return EOF, so we'll have to check for that.
 	if cerr := ws.stdin.Close(); cerr != nil && cerr != io.EOF {
-		err = multierr.Append(err, cerr)
+		err = errors.Join(err, cerr)
 	}
 	if cerr := ws.stdout.Close(); cerr != nil && cerr != io.EOF {
-		err = multierr.Append(err, cerr)
+		err = errors.Join(err, cerr)
 	}
 	if cerr := ws.stderr.Close(); cerr != nil && cerr != io.EOF {
-		err = multierr.Append(err, cerr)
+		err = errors.Join(err, cerr)
 	}
 	return
 }
@@ -177,7 +173,7 @@ type workerSetup struct {
 	workers map[string]WorkerSession
 }
 
-func (w *workerSetup) Apply(ctx context.Context, host iago.Host) (err error) {
+func (w *workerSetup) Apply(_ context.Context, host iago.Host) (err error) {
 	cmd, err := host.NewCommand()
 	if err != nil {
 		return err
@@ -265,11 +261,13 @@ func tempDirPath(host iago.Host, dirName string) string {
 	return path.Join(tmp, dirName)
 }
 
+var rnd = rand.New(rand.NewSource(time.Now().UnixNano()))
+
 func randString(n int) string {
-	var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+	letters := []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 	s := make([]rune, n)
 	for i := range s {
-		s[i] = letters[rand.Intn(len(letters))]
+		s[i] = letters[rnd.Intn(len(letters))]
 	}
 	return string(s)
 }

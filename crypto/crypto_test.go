@@ -3,12 +3,14 @@ package crypto_test
 import (
 	"testing"
 
+	"github.com/relab/hotstuff/modules"
+
 	"github.com/golang/mock/gomock"
 	"github.com/relab/hotstuff"
-	"github.com/relab/hotstuff/consensus"
 	"github.com/relab/hotstuff/crypto"
 	"github.com/relab/hotstuff/crypto/bls12"
 	"github.com/relab/hotstuff/crypto/ecdsa"
+	"github.com/relab/hotstuff/crypto/eddsa"
 	"github.com/relab/hotstuff/internal/testutil"
 )
 
@@ -27,7 +29,7 @@ func TestCreatePartialCert(t *testing.T) {
 			t.Error("Partial certificate hash does not match block hash!")
 		}
 
-		if signerID := partialCert.Signature().Signer(); signerID != hotstuff.ID(1) {
+		if signerID := partialCert.Signer(); signerID != hotstuff.ID(1) {
 			t.Errorf("Wrong ID for signer in partial certificate: got: %d, want: %d", signerID, hotstuff.ID(1))
 		}
 	}
@@ -81,8 +83,35 @@ func TestCreateTimeoutCert(t *testing.T) {
 			t.Fatalf("Failed to create QC: %v", err)
 		}
 
-		if tc.View() != consensus.View(1) {
+		if tc.View() != hotstuff.View(1) {
 			t.Error("Timeout certificate view does not match original view.")
+		}
+	}
+	runAll(t, run)
+}
+
+func TestCreateQCWithOneSig(t *testing.T) {
+	run := func(t *testing.T, setup setupFunc) {
+		ctrl := gomock.NewController(t)
+		td := setup(t, ctrl, 4)
+		pcs := testutil.CreatePCs(t, td.block, td.signers)
+		_, err := td.signers[0].CreateQuorumCert(td.block, pcs[:1])
+		if err == nil {
+			t.Fatal("Expected error when creating QC with only one signature")
+		}
+	}
+	runAll(t, run)
+}
+
+func TestCreateQCWithOverlappingSigs(t *testing.T) {
+	run := func(t *testing.T, setup setupFunc) {
+		ctrl := gomock.NewController(t)
+		td := setup(t, ctrl, 4)
+		pcs := testutil.CreatePCs(t, td.block, td.signers)
+		pcs = append(pcs, pcs[0])
+		_, err := td.signers[0].CreateQuorumCert(td.block, pcs)
+		if err == nil {
+			t.Fatal("Expected error when creating QC with overlapping signatures")
 		}
 	}
 	runAll(t, run)
@@ -94,7 +123,7 @@ func TestVerifyGenesisQC(t *testing.T) {
 
 		td := setup(t, ctrl, 4)
 
-		genesisQC, err := td.signers[0].CreateQuorumCert(consensus.GetGenesis(), []consensus.PartialCert{})
+		genesisQC, err := td.signers[0].CreateQuorumCert(hotstuff.GetGenesis(), []hotstuff.PartialCert{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -150,12 +179,12 @@ func TestVerifyAggregateQC(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		ok, highQC := td.signers[0].VerifyAggregateQC(aggQC)
+		highQC, ok := td.signers[0].VerifyAggregateQC(aggQC)
 		if !ok {
 			t.Fatal("AggregateQC was not verified")
 		}
 
-		if highQC.BlockHash() != consensus.GetGenesis().Hash() {
+		if highQC.BlockHash() != hotstuff.GetGenesis().Hash() {
 			t.Fatal("Wrong hash for highQC")
 		}
 	}
@@ -166,62 +195,76 @@ func runAll(t *testing.T, run func(*testing.T, setupFunc)) {
 	t.Helper()
 	t.Run("Ecdsa", func(t *testing.T) { run(t, setup(NewBase(ecdsa.New), testutil.GenerateECDSAKey)) })
 	t.Run("Cache+Ecdsa", func(t *testing.T) { run(t, setup(NewCache(ecdsa.New), testutil.GenerateECDSAKey)) })
+	t.Run("Eddsa", func(t *testing.T) { run(t, setup(NewBase(eddsa.New), testutil.GenerateEDDSAKey)) })
+	t.Run("Cache+Eddsa", func(t *testing.T) { run(t, setup(NewCache(eddsa.New), testutil.GenerateEDDSAKey)) })
 	t.Run("BLS12-381", func(t *testing.T) { run(t, setup(NewBase(bls12.New), testutil.GenerateBLS12Key)) })
 	t.Run("Cache+BLS12-381", func(t *testing.T) { run(t, setup(NewCache(bls12.New), testutil.GenerateBLS12Key)) })
 }
 
-func createBlock(t *testing.T, signer consensus.Crypto) *consensus.Block {
+func createBlock(t *testing.T, signer modules.Crypto) *hotstuff.Block {
 	t.Helper()
 
-	qc, err := signer.CreateQuorumCert(consensus.GetGenesis(), []consensus.PartialCert{})
+	qc, err := signer.CreateQuorumCert(hotstuff.GetGenesis(), []hotstuff.PartialCert{})
 	if err != nil {
 		t.Errorf("Could not create empty QC for genesis: %v", err)
 	}
 
-	b := consensus.NewBlock(consensus.GetGenesis().Hash(), qc, "foo", 42, 1)
+	b := hotstuff.NewBlock(hotstuff.GetGenesis().Hash(), qc, "foo", 42, 1)
 	return b
 }
 
-type keyFunc func(t *testing.T) consensus.PrivateKey
+type keyFunc func(t *testing.T) hotstuff.PrivateKey
 type setupFunc func(*testing.T, *gomock.Controller, int) testData
 
-func setup(newFunc func() consensus.Crypto, keyFunc keyFunc) setupFunc {
+func setup(newFunc func() modules.Crypto, keyFunc keyFunc) setupFunc {
 	return func(t *testing.T, ctrl *gomock.Controller, n int) testData {
 		return newTestData(t, ctrl, n, newFunc, keyFunc)
 	}
 }
 
-func NewCache(impl func() consensus.CryptoImpl) func() consensus.Crypto {
-	return func() consensus.Crypto {
+func NewCache(impl func() modules.CryptoBase) func() modules.Crypto {
+	return func() modules.Crypto {
 		return crypto.NewCache(impl(), 10)
 	}
 }
 
-func NewBase(impl func() consensus.CryptoImpl) func() consensus.Crypto {
-	return func() consensus.Crypto {
+func NewBase(impl func() modules.CryptoBase) func() modules.Crypto {
+	return func() modules.Crypto {
 		return crypto.New(impl())
 	}
 }
 
 type testData struct {
-	signers   []consensus.Crypto
-	verifiers []consensus.Crypto
-	block     *consensus.Block
+	signers   []modules.Crypto
+	verifiers []modules.Crypto
+	block     *hotstuff.Block
 }
 
-func newTestData(t *testing.T, ctrl *gomock.Controller, n int, newFunc func() consensus.Crypto, keyFunc keyFunc) testData {
+func newTestData(t *testing.T, ctrl *gomock.Controller, n int, newFunc func() modules.Crypto, keyFunc keyFunc) testData {
 	t.Helper()
 
 	bl := testutil.CreateBuilders(t, ctrl, n, testutil.GenerateKeys(t, n, keyFunc)...)
 	for _, builder := range bl {
 		signer := newFunc()
-		builder.Register(signer)
+		builder.Add(signer)
 	}
 	hl := bl.Build()
+
+	var signer modules.Crypto
+	hl[0].Get(&signer)
+
+	block := createBlock(t, signer)
+
+	for _, mods := range hl {
+		var blockChain modules.BlockChain
+		mods.Get(&blockChain)
+
+		blockChain.Store(block)
+	}
 
 	return testData{
 		signers:   hl.Signers(),
 		verifiers: hl.Verifiers(),
-		block:     createBlock(t, hl[0].Crypto()),
+		block:     block,
 	}
 }

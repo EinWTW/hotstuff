@@ -5,12 +5,15 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"time"
+
+	"github.com/relab/hotstuff/eventloop"
+	"github.com/relab/hotstuff/logging"
+	"github.com/relab/hotstuff/modules"
 
 	"github.com/relab/gorums"
 	"github.com/relab/hotstuff"
-	"github.com/relab/hotstuff/consensus"
 	"github.com/relab/hotstuff/internal/proto/hotstuffpb"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
@@ -21,28 +24,59 @@ import (
 // Server is the Server-side of the gorums backend.
 // It is responsible for calling handler methods on the consensus instance.
 type Server struct {
-	mods      *consensus.Modules
-	gorumsSrv *gorums.Server
+	blockChain    modules.BlockChain
+	configuration modules.Configuration
+	eventLoop     *eventloop.EventLoop
+	logger        logging.Logger
+	location      string
+	locationInfo  map[hotstuff.ID]string
+	latencyMatrix map[string]time.Duration
+	gorumsSrv     *gorums.Server
 }
 
-// InitConsensusModule gives the module a reference to the Modules object.
-// It also allows the module to set module options using the OptionsBuilder.
-func (srv *Server) InitConsensusModule(mods *consensus.Modules, _ *consensus.OptionsBuilder) {
-	srv.mods = mods
+// InitModule initializes the Server.
+func (srv *Server) InitModule(mods *modules.Core) {
+	mods.Get(
+		&srv.eventLoop,
+		&srv.configuration,
+		&srv.blockChain,
+		&srv.logger,
+	)
 }
 
 // NewServer creates a new Server.
-func NewServer(opts ...gorums.ServerOption) *Server {
-	srv := &Server{}
-
-	grpcServerOpts := []grpc.ServerOption{}
-
-	opts = append(opts, gorums.WithGRPCServerOptions(grpcServerOpts...))
-
-	srv.gorumsSrv = gorums.NewServer(opts...)
-
+func NewServer(opts ...ServerOptions) *Server {
+	options := &backendOptions{}
+	for _, opt := range opts {
+		opt(options)
+	}
+	srv := &Server{
+		location:      options.location,
+		locationInfo:  options.locationInfo,
+		latencyMatrix: options.locationLatencies,
+	}
+	options.gorumsSrvOpts = append(options.gorumsSrvOpts, gorums.WithConnectCallback(func(ctx context.Context) {
+		srv.eventLoop.AddEvent(replicaConnected{ctx})
+	}))
+	srv.gorumsSrv = gorums.NewServer(options.gorumsSrvOpts...)
 	hotstuffpb.RegisterHotstuffServer(srv.gorumsSrv, &serviceImpl{srv})
 	return srv
+}
+
+func (srv *Server) induceLatency(sender hotstuff.ID) {
+	if srv.location == hotstuff.DefaultLocation {
+		return
+	}
+	senderLocation := srv.locationInfo[sender]
+	senderLatency := srv.latencyMatrix[senderLocation]
+	srv.logger.Debugf("latency from server %s to server %s is %s\n", srv.location, senderLocation, senderLatency)
+	timer1 := time.NewTimer(senderLatency)
+	<-timer1.C
+}
+
+// GetGorumsServer returns the underlying gorums Server.
+func (srv *Server) GetGorumsServer() *gorums.Server {
+	return srv.gorumsSrv
 }
 
 // Start creates a listener on the configured address and starts the server.
@@ -60,13 +94,13 @@ func (srv *Server) StartOnListener(listener net.Listener) {
 	go func() {
 		err := srv.gorumsSrv.Serve(listener)
 		if err != nil {
-			srv.mods.Logger().Errorf("An error occurred while serving: %v", err)
+			srv.logger.Errorf("An error occurred while serving: %v", err)
 		}
 	}()
 }
 
 // GetPeerIDFromContext extracts the ID of the peer from the context.
-func GetPeerIDFromContext(ctx context.Context, cfg consensus.Configuration) (hotstuff.ID, error) {
+func GetPeerIDFromContext(ctx context.Context, cfg modules.Configuration) (hotstuff.ID, error) {
 	peerInfo, ok := peer.FromContext(ctx)
 	if !ok {
 		return 0, fmt.Errorf("peerInfo not available")
@@ -119,28 +153,28 @@ type serviceImpl struct {
 
 // Propose handles a replica's response to the Propose QC from the leader.
 func (impl *serviceImpl) Propose(ctx gorums.ServerCtx, proposal *hotstuffpb.Proposal) {
-	id, err := GetPeerIDFromContext(ctx, impl.srv.mods.Configuration())
+	id, err := GetPeerIDFromContext(ctx, impl.srv.configuration)
 	if err != nil {
-		impl.srv.mods.Logger().Infof("Failed to get client ID: %v", err)
+		impl.srv.logger.Infof("Failed to get client ID: %v", err)
 		return
 	}
 
 	proposal.Block.Proposer = uint32(id)
 	proposeMsg := hotstuffpb.ProposalFromProto(proposal)
 	proposeMsg.ID = id
-
-	impl.srv.mods.EventLoop().AddEvent(proposeMsg)
+	impl.srv.induceLatency(id)
+	impl.srv.eventLoop.AddEvent(proposeMsg)
 }
 
 // Vote handles an incoming vote message.
 func (impl *serviceImpl) Vote(ctx gorums.ServerCtx, cert *hotstuffpb.PartialCert) {
-	id, err := GetPeerIDFromContext(ctx, impl.srv.mods.Configuration())
+	id, err := GetPeerIDFromContext(ctx, impl.srv.configuration)
 	if err != nil {
-		impl.srv.mods.Logger().Infof("Failed to get client ID: %v", err)
+		impl.srv.logger.Infof("Failed to get client ID: %v", err)
 		return
 	}
-
-	impl.srv.mods.EventLoop().AddEvent(consensus.VoteMsg{
+	impl.srv.induceLatency(id)
+	impl.srv.eventLoop.AddEvent(hotstuff.VoteMsg{
 		ID:          id,
 		PartialCert: hotstuffpb.PartialCertFromProto(cert),
 	})
@@ -148,29 +182,29 @@ func (impl *serviceImpl) Vote(ctx gorums.ServerCtx, cert *hotstuffpb.PartialCert
 
 // NewView handles the leader's response to receiving a NewView rpc from a replica.
 func (impl *serviceImpl) NewView(ctx gorums.ServerCtx, msg *hotstuffpb.SyncInfo) {
-	id, err := GetPeerIDFromContext(ctx, impl.srv.mods.Configuration())
+	id, err := GetPeerIDFromContext(ctx, impl.srv.configuration)
 	if err != nil {
-		impl.srv.mods.Logger().Infof("Failed to get client ID: %v", err)
+		impl.srv.logger.Infof("Failed to get client ID: %v", err)
 		return
 	}
-
-	impl.srv.mods.EventLoop().AddEvent(consensus.NewViewMsg{
+	impl.srv.induceLatency(id)
+	impl.srv.eventLoop.AddEvent(hotstuff.NewViewMsg{
 		ID:       id,
 		SyncInfo: hotstuffpb.SyncInfoFromProto(msg),
 	})
 }
 
 // Fetch handles an incoming fetch request.
-func (impl *serviceImpl) Fetch(ctx gorums.ServerCtx, pb *hotstuffpb.BlockHash) (*hotstuffpb.Block, error) {
-	var hash consensus.Hash
+func (impl *serviceImpl) Fetch(_ gorums.ServerCtx, pb *hotstuffpb.BlockHash) (*hotstuffpb.Block, error) {
+	var hash hotstuff.Hash
 	copy(hash[:], pb.GetHash())
 
-	block, ok := impl.srv.mods.BlockChain().LocalGet(hash)
+	block, ok := impl.srv.blockChain.LocalGet(hash)
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "requested block was not found")
 	}
 
-	impl.srv.mods.Logger().Debugf("OnFetch: %.8s", hash)
+	impl.srv.logger.Debugf("OnFetch: %.8s", hash)
 
 	return hotstuffpb.BlockToProto(block), nil
 }
@@ -179,9 +213,14 @@ func (impl *serviceImpl) Fetch(ctx gorums.ServerCtx, pb *hotstuffpb.BlockHash) (
 func (impl *serviceImpl) Timeout(ctx gorums.ServerCtx, msg *hotstuffpb.TimeoutMsg) {
 	var err error
 	timeoutMsg := hotstuffpb.TimeoutMsgFromProto(msg)
-	timeoutMsg.ID, err = GetPeerIDFromContext(ctx, impl.srv.mods.Configuration())
+	timeoutMsg.ID, err = GetPeerIDFromContext(ctx, impl.srv.configuration)
 	if err != nil {
-		impl.srv.mods.Logger().Infof("Could not get ID of replica: %v", err)
+		impl.srv.logger.Infof("Could not get ID of replica: %v", err)
 	}
-	impl.srv.mods.EventLoop().AddEvent(timeoutMsg)
+	impl.srv.induceLatency(timeoutMsg.ID)
+	impl.srv.eventLoop.AddEvent(timeoutMsg)
+}
+
+type replicaConnected struct {
+	ctx context.Context
 }

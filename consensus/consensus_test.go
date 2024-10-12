@@ -3,12 +3,14 @@ package consensus_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/golang/mock/gomock"
 	"github.com/relab/hotstuff"
-	"github.com/relab/hotstuff/consensus"
+	"github.com/relab/hotstuff/eventloop"
 	"github.com/relab/hotstuff/internal/mocks"
 	"github.com/relab/hotstuff/internal/testutil"
+	"github.com/relab/hotstuff/modules"
 	"github.com/relab/hotstuff/synchronizer"
 )
 
@@ -18,35 +20,42 @@ func TestVote(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	bl := testutil.CreateBuilders(t, ctrl, n)
 	cs := mocks.NewMockConsensus(ctrl)
-	bl[0].Register(synchronizer.New(testutil.FixedTimeout(1000)), cs)
+	bl[0].Add(synchronizer.New(testutil.FixedTimeout(1*time.Millisecond)), cs)
 	hl := bl.Build()
 	hs := hl[0]
 
-	cs.EXPECT().Propose(gomock.AssignableToTypeOf(consensus.NewSyncInfo()))
+	var (
+		eventLoop  *eventloop.EventLoop
+		blockChain modules.BlockChain
+	)
+
+	hs.Get(&eventLoop, &blockChain)
+
+	cs.EXPECT().Propose(gomock.AssignableToTypeOf(hotstuff.NewSyncInfo()))
 
 	ok := false
 	ctx, cancel := context.WithCancel(context.Background())
-	hs.EventLoop().RegisterObserver(consensus.NewViewMsg{}, func(event interface{}) {
+	eventLoop.RegisterObserver(hotstuff.NewViewMsg{}, func(_ any) {
 		ok = true
 		cancel()
 	})
 
 	b := testutil.NewProposeMsg(
-		consensus.GetGenesis().Hash(),
-		consensus.NewQuorumCert(nil, 1, consensus.GetGenesis().Hash()),
+		hotstuff.GetGenesis().Hash(),
+		hotstuff.NewQuorumCert(nil, 1, hotstuff.GetGenesis().Hash()),
 		"test", 1, 1,
 	)
-	hs.BlockChain().Store(b.Block)
+	blockChain.Store(b.Block)
 
 	for i, signer := range hl.Signers() {
 		pc, err := signer.CreatePartialCert(b.Block)
 		if err != nil {
 			t.Fatalf("Failed to create partial certificate: %v", err)
 		}
-		hs.EventLoop().AddEvent(consensus.VoteMsg{ID: hotstuff.ID(i + 1), PartialCert: pc})
+		eventLoop.AddEvent(hotstuff.VoteMsg{ID: hotstuff.ID(i + 1), PartialCert: pc})
 	}
 
-	hs.Run(ctx)
+	eventLoop.Run(ctx)
 
 	if !ok {
 		t.Error("No new view event happened")

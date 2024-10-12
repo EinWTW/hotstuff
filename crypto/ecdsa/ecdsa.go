@@ -1,18 +1,17 @@
-// Package ecdsa provides a crypto implementation for HotStuff using Go's 'crypto/ecdsa' package.
+// Package ecdsa implements the spec-k256 curve signature.
 package ecdsa
 
 import (
 	"crypto/ecdsa"
 	"crypto/rand"
+	"crypto/sha256"
 	"fmt"
 	"math/big"
-	"sort"
 
 	"github.com/relab/hotstuff"
-	"github.com/relab/hotstuff/consensus"
 	"github.com/relab/hotstuff/crypto"
+	"github.com/relab/hotstuff/logging"
 	"github.com/relab/hotstuff/modules"
-	"go.uber.org/multierr"
 )
 
 func init() {
@@ -22,18 +21,24 @@ func init() {
 const (
 	// PrivateKeyFileType is the PEM type for a private key.
 	PrivateKeyFileType = "ECDSA PRIVATE KEY"
-
 	// PublicKeyFileType is the PEM type for a public key.
 	PublicKeyFileType = "ECDSA PUBLIC KEY"
 )
 
-// Signature is an ECDSA signature
+var (
+	_ hotstuff.QuorumSignature = (*crypto.Multi[*Signature])(nil)
+	_ hotstuff.IDSet           = (*crypto.Multi[*Signature])(nil)
+	_ crypto.Signature         = (*Signature)(nil)
+)
+
+// Signature is an ECDSA signature.
 type Signature struct {
 	r, s   *big.Int
 	signer hotstuff.ID
 }
 
-// RestoreSignature restores an existing signature. It should not be used to create new signatures, use Sign instead.
+// RestoreSignature restores an existing signature.
+// It should not be used to create new signatures, use Sign instead.
 func RestoreSignature(r, s *big.Int, signer hotstuff.ID) *Signature {
 	return &Signature{r, s, signer}
 }
@@ -43,17 +48,17 @@ func (sig Signature) Signer() hotstuff.ID {
 	return sig.signer
 }
 
-// R returns the r value of the signature
+// R returns the r value of the signature.
 func (sig Signature) R() *big.Int {
 	return sig.r
 }
 
-// S returns the s value of the signature
+// S returns the s value of the signature.
 func (sig Signature) S() *big.Int {
 	return sig.s
 }
 
-// ToBytes returns a raw byte string representation of the signature
+// ToBytes returns a raw byte string representation of the signature.
 func (sig Signature) ToBytes() []byte {
 	var b []byte
 	b = append(b, sig.r.Bytes()...)
@@ -61,232 +66,135 @@ func (sig Signature) ToBytes() []byte {
 	return b
 }
 
-var _ consensus.Signature = (*Signature)(nil)
-
-// ThresholdSignature is a set of (partial) signatures that form a valid threshold signature when there are a quorum
-// of valid (partial) signatures.
-type ThresholdSignature map[hotstuff.ID]*Signature
-
-// RestoreThresholdSignature should only be used to restore an existing threshold signature from a set of signatures.
-// To create a new verifiable threshold signature, use CreateThresholdSignature instead.
-func RestoreThresholdSignature(signatures []*Signature) ThresholdSignature {
-	sig := make(ThresholdSignature, len(signatures))
-	for _, s := range signatures {
-		sig[s.signer] = s
-	}
-	return sig
+type ecdsaBase struct {
+	configuration modules.Configuration
+	logger        logging.Logger
+	opts          *modules.Options
 }
 
-// ToBytes returns the object as bytes.
-func (sig ThresholdSignature) ToBytes() []byte {
-	var b []byte
-	// sort by ID to make it deterministic
-	order := make([]hotstuff.ID, 0, len(sig))
-	for _, signature := range sig {
-		i := sort.Search(len(order), func(i int) bool { return signature.signer < order[i] })
-		order = append(order, 0)
-		copy(order[i+1:], order[i:])
-		order[i] = signature.signer
-	}
-	for _, id := range order {
-		b = append(b, sig[id].ToBytes()...)
-	}
-	return b
+// New returns a new instance of the ECDSA CryptoBase implementation.
+func New() modules.CryptoBase {
+	return &ecdsaBase{}
 }
 
-// Participants returns the IDs of replicas who participated in the threshold signature.
-func (sig ThresholdSignature) Participants() consensus.IDSet {
-	return sig
-}
-
-// Add adds an ID to the set.
-func (sig ThresholdSignature) Add(id hotstuff.ID) {
-	panic("not implemented")
-}
-
-// Contains returns true if the set contains the ID.
-func (sig ThresholdSignature) Contains(id hotstuff.ID) bool {
-	_, ok := sig[id]
-	return ok
-}
-
-// ForEach calls f for each ID in the set.
-func (sig ThresholdSignature) ForEach(f func(hotstuff.ID)) {
-	for id := range sig {
-		f(id)
-	}
-}
-
-var _ consensus.ThresholdSignature = (*ThresholdSignature)(nil)
-var _ consensus.IDSet = (*ThresholdSignature)(nil)
-
-type ecdsaCrypto struct {
-	mods *consensus.Modules
-}
-
-// InitConsensusModule gives the module a reference to the Modules object.
+// InitModule gives the module a reference to the Core object.
 // It also allows the module to set module options using the OptionsBuilder.
-func (ec *ecdsaCrypto) InitConsensusModule(mods *consensus.Modules, _ *consensus.OptionsBuilder) {
-	ec.mods = mods
+func (ec *ecdsaBase) InitModule(mods *modules.Core) {
+	mods.Get(
+		&ec.configuration,
+		&ec.logger,
+		&ec.opts,
+	)
 }
 
-// New returns a new signer and a new verifier.
-func New() consensus.CryptoImpl {
-	ec := &ecdsaCrypto{}
-	return ec
+func (ec *ecdsaBase) privateKey() *ecdsa.PrivateKey {
+	return ec.opts.PrivateKey().(*ecdsa.PrivateKey)
 }
 
-func (ec *ecdsaCrypto) getPrivateKey() *ecdsa.PrivateKey {
-	pk := ec.mods.PrivateKey()
-	return pk.(*ecdsa.PrivateKey)
-}
-
-// Sign signs a hash.
-func (ec *ecdsaCrypto) Sign(hash consensus.Hash) (sig consensus.Signature, err error) {
-	r, s, err := ecdsa.Sign(rand.Reader, ec.getPrivateKey(), hash[:])
+// Sign creates a cryptographic signature of the given message.
+func (ec *ecdsaBase) Sign(message []byte) (signature hotstuff.QuorumSignature, err error) {
+	hash := sha256.Sum256(message)
+	r, s, err := ecdsa.Sign(rand.Reader, ec.privateKey(), hash[:])
 	if err != nil {
 		return nil, fmt.Errorf("ecdsa: sign failed: %w", err)
 	}
-	return &Signature{
+	return crypto.Multi[*Signature]{ec.opts.ID(): &Signature{
 		r:      r,
 		s:      s,
-		signer: ec.mods.ID(),
-	}, nil
+		signer: ec.opts.ID(),
+	}}, nil
 }
 
-// Verify verifies a signature given a hash.
-func (ec *ecdsaCrypto) Verify(sig consensus.Signature, hash consensus.Hash) bool {
-	_sig, ok := sig.(*Signature)
+// Combine combines multiple signatures into a single signature.
+func (ec *ecdsaBase) Combine(signatures ...hotstuff.QuorumSignature) (hotstuff.QuorumSignature, error) {
+	if len(signatures) < 2 {
+		return nil, crypto.ErrCombineMultiple
+	}
+
+	ts := make(crypto.Multi[*Signature])
+	for _, sig1 := range signatures {
+		if sig2, ok := sig1.(crypto.Multi[*Signature]); ok {
+			for id, s := range sig2 {
+				if _, duplicate := ts[id]; duplicate {
+					return nil, crypto.ErrCombineOverlap
+				}
+				ts[id] = s
+			}
+		} else {
+			ec.logger.Panicf("cannot combine signature of incompatible type %T (expected %T)", sig1, sig2)
+		}
+	}
+	return ts, nil
+}
+
+// Verify verifies the given quorum signature against the message.
+func (ec *ecdsaBase) Verify(signature hotstuff.QuorumSignature, message []byte) bool {
+	s, ok := signature.(crypto.Multi[*Signature])
 	if !ok {
+		ec.logger.Panicf("cannot verify signature of incompatible type %T (expected %T)", signature, s)
+	}
+	n := signature.Participants().Len()
+	if n == 0 {
 		return false
 	}
-	replica, ok := ec.mods.Configuration().Replica(sig.Signer())
+
+	results := make(chan bool, n)
+	hash := sha256.Sum256(message)
+	for _, sig := range s {
+		go func(sig *Signature, hash hotstuff.Hash) {
+			results <- ec.verifySingle(sig, hash)
+		}(sig, hash)
+	}
+	valid := true
+	for range s {
+		if !<-results {
+			valid = false
+		}
+	}
+	return valid
+}
+
+// BatchVerify verifies the given quorum signature against the batch of messages.
+func (ec *ecdsaBase) BatchVerify(signature hotstuff.QuorumSignature, batch map[hotstuff.ID][]byte) bool {
+	s, ok := signature.(crypto.Multi[*Signature])
 	if !ok {
-		ec.mods.Logger().Infof("ecdsaCrypto: got signature from replica whose ID (%d) was not in the config.", sig.Signer())
+		ec.logger.Panicf("cannot verify signature of incompatible type %T (expected %T)", signature, s)
+	}
+	n := signature.Participants().Len()
+	if n == 0 {
+		return false
+	}
+
+	results := make(chan bool, n)
+	set := make(map[hotstuff.Hash]struct{})
+	for id, sig := range s {
+		message, ok := batch[id]
+		if !ok {
+			return false
+		}
+		hash := sha256.Sum256(message)
+		set[hash] = struct{}{}
+		go func(sig *Signature, hash hotstuff.Hash) {
+			results <- ec.verifySingle(sig, hash)
+		}(sig, hash)
+	}
+	valid := true
+	for range s {
+		if !<-results {
+			valid = false
+		}
+	}
+
+	// valid if all partial signatures are valid and there are no duplicate messages
+	return valid && len(set) == len(batch)
+}
+
+func (ec *ecdsaBase) verifySingle(sig *Signature, hash hotstuff.Hash) bool {
+	replica, ok := ec.configuration.Replica(sig.Signer())
+	if !ok {
+		ec.logger.Warnf("ecdsaBase: got signature from replica whose ID (%d) was not in the config.", sig.Signer())
 		return false
 	}
 	pk := replica.PublicKey().(*ecdsa.PublicKey)
-	return ecdsa.Verify(pk, hash[:], _sig.R(), _sig.S())
+	return ecdsa.Verify(pk, hash[:], sig.R(), sig.S())
 }
-
-// CreateThresholdSignature creates a threshold signature from the given partial signatures.
-func (ec *ecdsaCrypto) CreateThresholdSignature(partialSignatures []consensus.Signature, hash consensus.Hash) (_ consensus.ThresholdSignature, err error) {
-	thrSig := make(ThresholdSignature)
-	for _, s := range partialSignatures {
-		if thrSig.Participants().Contains(s.Signer()) {
-			err = multierr.Append(err, crypto.ErrPartialDuplicate)
-			continue
-		}
-
-		sig, ok := s.(*Signature)
-		if !ok {
-			err = multierr.Append(err, fmt.Errorf("%w: %T", crypto.ErrWrongType, s))
-			continue
-		}
-
-		// use the registered verifier instead of ourself to verify.
-		// this makes it possible for the signatureCache to work.
-		if ec.mods.Crypto().Verify(s, hash) {
-			thrSig[sig.signer] = sig
-		}
-	}
-
-	if len(thrSig) >= ec.mods.Configuration().QuorumSize() {
-		return thrSig, nil
-	}
-
-	return nil, multierr.Combine(crypto.ErrNotAQuorum, err)
-}
-
-// CreateThresholdSignatureForMessageSet creates a ThresholdSignature of partial signatures where each partialSignature
-// has signed a different message hash.
-func (ec *ecdsaCrypto) CreateThresholdSignatureForMessageSet(partialSignatures []consensus.Signature, hashes map[hotstuff.ID]consensus.Hash) (_ consensus.ThresholdSignature, err error) {
-	ec.mods.Logger().Debug(hashes)
-	thrSig := make(ThresholdSignature)
-	for _, s := range partialSignatures {
-		if thrSig.Participants().Contains(s.Signer()) {
-			err = multierr.Append(err, crypto.ErrPartialDuplicate)
-			continue
-		}
-
-		hash, ok := hashes[s.Signer()]
-		if !ok {
-			continue
-		}
-
-		sig, ok := s.(*Signature)
-		if !ok {
-			err = multierr.Append(err, fmt.Errorf("%w: %T", crypto.ErrWrongType, s))
-			continue
-		}
-
-		// use the registered verifier instead of ourself to verify.
-		// this makes it possible for the signatureCache to work.
-		if ec.mods.Crypto().Verify(s, hash) {
-			thrSig[sig.signer] = sig
-		}
-	}
-
-	if len(thrSig) >= ec.mods.Configuration().QuorumSize() {
-		return thrSig, nil
-	}
-
-	return nil, multierr.Combine(crypto.ErrNotAQuorum, err)
-}
-
-// VerifyThresholdSignature verifies a threshold signature.
-func (ec *ecdsaCrypto) VerifyThresholdSignature(signature consensus.ThresholdSignature, hash consensus.Hash) bool {
-	sig, ok := signature.(ThresholdSignature)
-	if !ok {
-		return false
-	}
-	if len(sig) < ec.mods.Configuration().QuorumSize() {
-		return false
-	}
-	results := make(chan bool)
-	for _, pSig := range sig {
-		go func(sig *Signature) {
-			results <- ec.mods.Crypto().Verify(sig, hash)
-		}(pSig)
-	}
-	numVerified := 0
-	for range sig {
-		if <-results {
-			numVerified++
-		}
-	}
-	return numVerified >= ec.mods.Configuration().QuorumSize()
-}
-
-// VerifyThresholdSignatureForMessageSet verifies a threshold signature against a set of message hashes.
-func (ec *ecdsaCrypto) VerifyThresholdSignatureForMessageSet(signature consensus.ThresholdSignature, hashes map[hotstuff.ID]consensus.Hash) bool {
-	ec.mods.Logger().Debug(hashes)
-	sig, ok := signature.(ThresholdSignature)
-	if !ok {
-		return false
-	}
-	hashSet := make(map[consensus.Hash]struct{})
-	results := make(chan bool)
-	for id, hash := range hashes {
-		if _, ok := hashSet[hash]; ok {
-			return false
-		}
-		hashSet[hash] = struct{}{}
-		s, ok := sig[id]
-		if !ok {
-			return false
-		}
-		go func(sig *Signature, hash consensus.Hash) {
-			results <- ec.mods.Crypto().Verify(sig, hash)
-		}(s, hash)
-	}
-	numVerified := 0
-	for range sig {
-		if <-results {
-			numVerified++
-		}
-	}
-	return numVerified >= ec.mods.Configuration().QuorumSize()
-}
-
-var _ consensus.CryptoImpl = (*ecdsaCrypto)(nil)

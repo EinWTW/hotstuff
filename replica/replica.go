@@ -6,16 +6,16 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"net"
-	"strconv"
 
-	"github.com/golang/protobuf/ptypes/empty"
+	"github.com/relab/hotstuff/eventloop"
+	"github.com/relab/hotstuff/modules"
+
 	"github.com/relab/gorums"
 	"github.com/relab/hotstuff"
 	"github.com/relab/hotstuff/backend"
-	"github.com/relab/hotstuff/consensus"
-	"github.com/relab/hotstuff/logging"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // cmdID is a unique identifier for a command
@@ -29,7 +29,7 @@ type Config struct {
 	// The id of the replica.
 	ID hotstuff.ID
 	// The private key of the replica.
-	PrivateKey consensus.PrivateKey
+	PrivateKey hotstuff.PrivateKey
 	// Controls whether TLS is used.
 	TLS bool
 	// The TLS certificate.
@@ -44,6 +44,8 @@ type Config struct {
 	ReplicaServerOptions []gorums.ServerOption
 	// Options for the replica manager.
 	ManagerOptions []gorums.ManagerOption
+	// Location information of all replicas
+	LocationInfo map[hotstuff.ID]string
 }
 
 // Replica is a participant in the consensus protocol.
@@ -51,15 +53,15 @@ type Replica struct {
 	clientSrv *clientSrv
 	cfg       *backend.Config
 	hsSrv     *backend.Server
-	hs        *consensus.Modules
+	hs        *modules.Core
 
-	execHandlers map[cmdID]func(*empty.Empty, error)
+	execHandlers map[cmdID]func(*emptypb.Empty, error)
 	cancel       context.CancelFunc
 	done         chan struct{}
 }
 
 // New returns a new replica.
-func New(conf Config, builder consensus.Builder) (replica *Replica) {
+func New(conf Config, builder modules.Builder) (replica *Replica) {
 	clientSrvOpts := conf.ClientServerOptions
 
 	if conf.TLS {
@@ -72,7 +74,7 @@ func New(conf Config, builder consensus.Builder) (replica *Replica) {
 
 	srv := &Replica{
 		clientSrv:    clientSrv,
-		execHandlers: make(map[cmdID]func(*empty.Empty, error)),
+		execHandlers: make(map[cmdID]func(*emptypb.Empty, error)),
 		cancel:       func() {},
 		done:         make(chan struct{}),
 	}
@@ -88,7 +90,10 @@ func New(conf Config, builder consensus.Builder) (replica *Replica) {
 		))
 	}
 
-	srv.hsSrv = backend.NewServer(replicaSrvOpts...)
+	srv.hsSrv = backend.NewServer(
+		backend.WithLatencyInfo(conf.ID, conf.LocationInfo),
+		backend.WithGorumsServerOptions(replicaSrvOpts...),
+	)
 
 	var creds credentials.TransportCredentials
 	managerOpts := conf.ManagerOptions
@@ -100,16 +105,22 @@ func New(conf Config, builder consensus.Builder) (replica *Replica) {
 	}
 	srv.cfg = backend.NewConfig(creds, managerOpts...)
 
-	builder.Register(
-		srv.cfg,                // configuration
-		srv.hsSrv,              // event handling
-		srv.clientSrv,          // executor
-		srv.clientSrv.cmdCache, // acceptor and command queue
-		logging.New("hs"+strconv.Itoa(int(conf.ID))),
+	builder.Add(
+		srv.cfg,   // configuration
+		srv.hsSrv, // event handling
+
+		modules.ExtendedExecutor(srv.clientSrv),
+		modules.ExtendedForkHandler(srv.clientSrv),
+		srv.clientSrv.cmdCache,
 	)
 	srv.hs = builder.Build()
 
 	return srv
+}
+
+// Modules returns the Modules object of this replica.
+func (srv *Replica) Modules() *modules.Core {
+	return srv.hs
 }
 
 // StartServers starts the client and replica servers.
@@ -140,10 +151,16 @@ func (srv *Replica) Stop() {
 	srv.Close()
 }
 
-// Run runs the replica until the context is cancelled.
+// Run runs the replica until the context is canceled.
 func (srv *Replica) Run(ctx context.Context) {
-	srv.hs.Synchronizer().Start(ctx)
-	srv.hs.Run(ctx)
+	var (
+		synchronizer modules.Synchronizer
+		eventLoop    *eventloop.EventLoop
+	)
+	srv.hs.Get(&synchronizer, &eventLoop)
+
+	synchronizer.Start(ctx)
+	eventLoop.Run(ctx)
 }
 
 // Close closes the connections and stops the servers used by the replica.
@@ -156,4 +173,9 @@ func (srv *Replica) Close() {
 // GetHash returns the hash of all executed commands.
 func (srv *Replica) GetHash() (b []byte) {
 	return srv.clientSrv.hash.Sum(b)
+}
+
+// GetCmdCount returns the count of all executed commands.
+func (srv *Replica) GetCmdCount() (c uint32) {
+	return srv.clientSrv.cmdCount
 }

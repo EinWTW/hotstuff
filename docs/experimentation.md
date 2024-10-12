@@ -54,19 +54,13 @@ events from the `Executor` module. The event type should not be defined in the m
 as that would require the other module to import the metrics module.
 
 ```go
-srv.mods.EventLoop().AddEvent(consensus.CommitEvent{Commands: len(batch.GetCommands())}
+eventLoop.AddEvent(consensus.CommitEvent{Commands: len(batch.GetCommands())}
 ```
-
-**NOTE:** In earlier versions, we used a separate event loop for metrics.
-This is no longer the case, and though the method `MetricsEventLoop()` remains,
-it now returns the same event loop as the `EventLoop()` method.
 
 ### Create a module for your metric
 
-To be able to interact with the event loop and other modules, you must implement either the `modules.Module`
-or `consensus.Module` interfaces. The former should be preferred unless you need to access any of the consensus
-modules directly. In the `InitModule` or `InitConsensusModule` functions you should add an observer or handler for
-the events that you want to receive.
+To be able to interact with the event loop and other modules, you must implement the `modules.Module` interface.
+In the `InitModule` functions you should add an observer or handler for the events that you want to receive.
 
 You should also add an observer for the `types.TickEvent` type on the `EventLoop`.
 This event is sent at a configured interval such that each metric can periodically log its measurement.
@@ -74,23 +68,26 @@ The example below shows a complete initialization function for the throughput me
 
 ```go
 // InitModule implements the modules.Module interface
-func (t *Throughput) InitModule(mods *modules.Modules) {
-    // store reference to modules object if it needs to be used later
-    t.mods = mods
+func (t *Throughput) InitModule(mods *modules.Core) {
+    var (
+        eventLoop *eventloop.EventLoop
+        logger logging.Logger
+    )
+    mods.Get(&eventLoop, &logger)
 
     // register handlers/observers for relevant events
-    t.mods.EventLoop().RegisterHandler(consensus.CommitEvent{}, func(event interface{}) {
+    eventLoop.RegisterHandler(consensus.CommitEvent{}, func(event interface{}) {
         // The event loop will only call the handler with events of the specified type, so this assertion is safe.
         commitEvent := event.(consensus.CommitEvent)
         t.recordCommit(commitEvent.Commands)
     })
 
     // register observer for tick events
-    t.mods.EventLoop().RegisterObserver(types.TickEvent{}, func(event interface{}) {
+    eventLoop.RegisterObserver(types.TickEvent{}, func(event interface{}) {
         t.tick(event.(types.TickEvent))
     })
 
-    t.mods.Logger().Info("Throughput metric enabled")
+    logger.Info("Throughput metric enabled")
 }
 ```
 
@@ -115,7 +112,7 @@ func init() {
 ## Running experiments locally
 
 First, compile the cli by running `make` from the project's root directory. If you get any errors, make sure that you
-have go version 1.16 or later, as well as a protobuf compiler installed. You might also need to run `make tools` to
+have go version 1.18 or later, as well as a protobuf compiler installed. You might also need to run `make tools` to
 install some additional tools. The next sections will assume that you have done this, and that you are running the cli
 from the project's root directory.
 
@@ -238,11 +235,27 @@ these additional flags are used:
 - `--worker` runs a worker locally, in addition to the remote hosts specified. Use this if you want the local machine
   to participate in the experiment.
 
+Additionally, it is possible to specify an *internal address* for each host.
+The internal address is used by replicas instead of the address used by the controller.
+This is useful if the controller is connecting to the remote hosts using a global address,
+whereas the hosts can communicate using local addresses.
+The internal address is configured through the configuration file (loaded by the `--config` flag):
+
+```toml
+[[hosts-config]]
+name = "hotstuff_worker_1"
+internal-address = "192.168.10.2"
+
+[[hosts-config]]
+name = "hotstuff_worker_1"
+internal-address = "192.168.10.3"
+```
+
 ### Manual assignment of clients and replicas
 
 By default, the controller (the local machine) will divide clients and replicas as evenly as possible among all workers
 (the remote hosts). You can override this behavior by specifying how many clients and replicas should be assigned to
-each host individually. This can only be done through a configuration file, not through command-line flags.
+each host individually. This can only be done through the configuration file, not through command-line flags.
 The following shows a configuration file that customizes the client and replica assignment for one of the hosts:
 
 ```toml
